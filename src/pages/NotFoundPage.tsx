@@ -1,6 +1,6 @@
 // src/pages/NotFoundPage.tsx
 import React from 'react';
-import { Container, Title, Text, Button, Stack, Image } from '@mantine/core'; // 引入 Image 组件（可选）
+import { Container, Title, Text, Button, Stack } from '@mantine/core'; // 引入 Image 组件（可选）
 import { useNavigate } from 'react-router-dom';
 // 你可以找一个合适的 404 图片放到 public 目录下，或者使用在线图片 URL
 // import image404 from '/images/404-illustration.svg'; // 示例：本地图片路径

@@ -10,7 +10,7 @@ interface PaginationProps {
   position?: 'left' | 'center' | 'right'; // 控制对齐
 }
 
-const PostPagination: React.FC<PaginationProps> = ({ total, value, onChange, disabled, position = 'center' }) => {
+const PostPagination: React.FC<PaginationProps> = ({ total, value, onChange, disabled }) => {
   if (total <= 1) {
     return null; // 只有一页或没有页不显示
   }

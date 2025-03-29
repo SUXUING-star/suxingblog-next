@@ -1,6 +1,6 @@
 // src/components/Header.tsx
 import React from 'react';
-import { Container, Group, Burger, Box, Title, Anchor } from '@mantine/core'; // 确保导入 Burger, Box, Title, Anchor
+import {  Group, Burger, Box, Title, Anchor } from '@mantine/core'; // 确保导入 Burger, Box, Title, Anchor
 import { Link as RouterLink } from 'react-router-dom';
 
 // Props 只需要 toggle 函数

@@ -1,7 +1,7 @@
 // src/components/Layout.tsx
 import React from 'react';
 import { Outlet } from 'react-router-dom';
-import { Box, Flex, Drawer, Center, Loader, Title } from '@mantine/core'; // 精简 imports
+import { Box, Flex, Drawer, Center, Loader } from '@mantine/core'; // 精简 imports
 import { useDisclosure } from '@mantine/hooks';
 import Header from './Header'; // 引入 Header
 import Footer from './Footer';

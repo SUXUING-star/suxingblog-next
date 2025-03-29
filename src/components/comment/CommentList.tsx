@@ -1,8 +1,8 @@
 // src/components/CommentList.mantine.tsx
 import React from 'react';
 import { SimpleComment } from '../../types/types'; // 确保类型路径正确
-import { Stack, Box, Text, Group, Avatar, Paper, ThemeIcon, Loader, Center } from '@mantine/core';
-import { IconMessageCircle, IconUserCircle } from '@tabler/icons-react';
+import { Stack, Box, Text, Group, Paper, ThemeIcon, Loader, Center } from '@mantine/core';
+import { IconUserCircle } from '@tabler/icons-react';
 
 interface CommentListProps {
   comments: SimpleComment[];
