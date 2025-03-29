@@ -1,5 +1,5 @@
 // src/services/PostApiService.ts
-import { IPost, PaginationInfo } from '../types/types'; // 确保路径正确
+import { IPost } from '../types/types'; // 确保路径正确
 import { ApiResponse, fetchApi } from './apiUtils';
 
 interface GetPostsParams {
