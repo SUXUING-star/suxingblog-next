@@ -1,0 +1,80 @@
+/* src/components/Layout.module.css */
+.layoutContainer {
+  min-height: 100vh;
+  /* background-color: var(--mantine-color-gray-0);  */ /* 可以不需要全局背景色 */
+}
+
+/* --- 桌面端固定侧边栏 --- */
+.sidebar {
+   width: var(--sidebar-width);
+   height: 100vh;
+   padding: var(--mantine-spacing-md);
+   border-right: 1px solid var(--mantine-color-gray-3);
+   position: fixed;
+   top: 0;
+   left: 0;
+   background-color: white;
+   z-index: 100;
+   /* 默认隐藏，只在桌面端显示 */
+   display: none; /* <-- 默认隐藏 */
+}
+
+.desktopOnly { /* 类名可以改为 sidebarDesktop */
+   /* 桌面端显示 */
+    @media (min-width: 768px) { /* 使用具体值或 PostCSS 变量 */
+         display: block; /* <-- 在 sm 及以上显示 */
+    }
+}
+
+
+/* --- 右侧主内容区域 --- */
+.mainContentArea {
+  flex: 1;
+  min-height: 100vh;
+  margin-left: 0px; /* 移动端默认占满 */
+  display: flex;
+  flex-direction: column;
+  background-color: var(--mantine-color-gray-0); /* 给主区域背景色 */
+}
+
+/* 桌面端的 marginLeft */
+@media (min-width: 768px) { /* 匹配上面的断点 */
+  .mainContentArea {
+     margin-left: var(--sidebar-width); /* 推开左边距 */
+  }
+}
+
+
+/* --- 移动端 Header --- */
+.header {
+  height: var(--header-height);
+  border-bottom: 1px solid var(--mantine-color-gray-3);
+  flex-shrink: 0;
+  background-color: white;
+  z-index: 50; /* 比 Sidebar 低，比 Main 高 */
+  /* 默认显示 (给移动端)，桌面端隐藏 */
+  display: block;
+}
+
+.mobileOnly { /* 类名可以改为 headerMobile */
+    /* 桌面端隐藏 */
+    @media (min-width: 768px) { /* 匹配上面的断点 */
+         display: none; /* <-- 在 sm 及以上隐藏 */
+    }
+}
+
+/* --- 主内容 Outlet 区域 --- */
+.main {
+   flex: 1;
+   padding: var(--mantine-spacing-md);
+   overflow-y: auto; /* 确保内容可滚动 */
+}
+
+/* --- Footer --- */
+.footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--mantine-color-gray-2);
+    background-color: white; /* 可以给 Footer 加背景色 */
+    padding-top: var(--mantine-spacing-sm);
+    padding-bottom: var(--mantine-spacing-sm);
+}
