@@ -4,7 +4,7 @@ export interface IPost {
   title: string;
   slug: string;
   content: string;
-  author: string;
+  authorId: string;
   tags?: string[];
   excerpt?: string;
   isPublished: boolean;
