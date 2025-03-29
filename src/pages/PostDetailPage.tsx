@@ -3,8 +3,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link as RouterLink, useNavigate } from 'react-router-dom';
 // 确保导入类型路径正确
 import { IPost, SimpleComment } from '../types/types';
-import {postApiService} from '../services/PostApiService';
-import { commentApiService } from '../services/CommentApiService';
+import {postApiService} from '../services/PostService';
+import { commentApiService } from '../services/CommentService';
 // 导入 AuthContext 以检查登录状态
 import { useAuth } from '../context/AuthContext';
 // 导入新创建的评论组件

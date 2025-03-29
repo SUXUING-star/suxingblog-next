@@ -1,6 +1,6 @@
 // src/context/AuthContext.tsx
 import React, { createContext, useState, useEffect, useContext, ReactNode, useCallback } from 'react';
-import { authApiService } from '../services/AuthApiService'; // 导入你的 API 服务
+import { authApiService } from '../services/AuthService'; // 导入你的 API 服务
 import { LoginCredentials, RegisterCredentials, UserData } from '../types/types'; // 假设 UserData 在 types.ts 定义
 import { Loader, Center } from '@mantine/core';
 

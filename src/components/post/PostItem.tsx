@@ -16,7 +16,7 @@ interface PostItemProps {
 
 const PostItem: React.FC<PostItemProps> = ({ post, onEdit, onDelete, isEditingOther }) => {
 	const disabled = isEditingOther; // 按钮是否禁用 
-	const token = useAuth();
+	const {token} = useAuth();
 
 	return (
 		<Paper shadow="xs" p="lg" radius="md" withBorder /* className={classes.paper} */ >
@@ -52,12 +52,12 @@ const PostItem: React.FC<PostItemProps> = ({ post, onEdit, onDelete, isEditingOt
 					{/* --- 条件渲染编辑和删除按钮 --- */}
 					{token && (
 						<>
-							<Tooltip label="Edit Post" /* ... */ >
+							<Tooltip label="编辑帖子" /* ... */ >
 								<ActionIcon variant="light" color="yellow" onClick={() => onEdit(post)} disabled={disabled} aria-label="Edit Post">
 									<IconPencil size={16} />
 								</ActionIcon>
 							</Tooltip>
-							<Tooltip label="Delete Post" /* ... */ >
+							<Tooltip label="删除帖子" /* ... */ >
 								<ActionIcon variant="light" color="red" onClick={() => onDelete(post._id)} disabled={disabled} aria-label="Delete Post">
 									<IconTrash size={16} />
 								</ActionIcon>
@@ -65,7 +65,7 @@ const PostItem: React.FC<PostItemProps> = ({ post, onEdit, onDelete, isEditingOt
 						</>
 					)}
 					{/* 添加一个查看详情的按钮（虽然标题已经是链接了） */}
-					<Tooltip label="View Post" withArrow position="bottom">
+					<Tooltip label="查看详情" withArrow position="bottom">
 						<ActionIcon component={RouterLink} to={`/posts/${post.slug}`} variant="light" color="blue" aria-label="View Post">
 							<IconExternalLink size={16} />
 						</ActionIcon>

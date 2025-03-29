@@ -50,7 +50,7 @@ function LoginPage() {
 				<LoadingOverlay visible={isLoading} zIndex={1000} overlayProps={{ radius: "sm", blur: 2 }} />
 
 				<Title order={2} ta="center" mb="lg">
-					Login to Your Account
+					登录您的账号
 				</Title>
 
 				<form onSubmit={form.onSubmit(handleSubmit)}>
@@ -64,28 +64,28 @@ function LoginPage() {
 
 						<TextInput
 							required
-							label="Email"
-							placeholder="your@email.com"
+							label="邮箱"
+							placeholder="xxx@email.com"
 							{...form.getInputProps('email')}
 						/>
 
 						<PasswordInput
 							required
-							label="Password"
-							placeholder="Your password"
+							label="密码"
+							placeholder="输入密码"
 							{...form.getInputProps('password')}
 						/>
 
 						<Button type="submit" fullWidth mt="md">
-							Login
+							登录
 						</Button>
 					</Stack>
 				</form>
 
 				<Text ta="center" mt="md" size="sm">
-					Don't have an account?{' '}
+					还没有账号？{' '}
 					<Anchor component={RouterLink} to="/register" fw={500}>
-						Register here
+						点我注册
 					</Anchor>
 				</Text>
 			</Paper>

@@ -9,7 +9,7 @@ import { IconHome, IconNotebook, IconAlertCircle, IconLogin, IconLogout, IconUse
 // Auth Context 导入
 import { useAuth } from '../../context/AuthContext';
 // API Service 导入
-import { postApiService } from '../../services/PostApiService';
+import { postApiService } from '../../services/PostService';
 // 类型导入 (确保路径正确)
 import { IPost } from '../../types/types';
 // React Router 导入

@@ -123,7 +123,7 @@ useEffect(() => {
             </Button>
           )}
           <Button type="submit" loading={isSubmitting} loaderProps={{ type: 'dots' }}>
-            {isEditing ? 'Update Post' : 'Create Post'}
+            {isEditing ? '更新帖子' : '创建帖子'}
           </Button>
         </Group>
       </Stack>

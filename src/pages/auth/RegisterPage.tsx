@@ -49,13 +49,13 @@ function RegisterPage() {
          <LoadingOverlay visible={isLoading} zIndex={1000} overlayProps={{ radius: "sm", blur: 2 }} />
 
         <Title order={2} ta="center" mb="lg">
-          Create Your Account
+          创建您的账号
         </Title>
 
          {/* 显示注册成功消息 */}
         {registerSuccess && (
              <Alert icon={<IconCheck size={16} />} title="Registration Successful!" color="teal" radius="md" mb="md">
-                You can now log in with your credentials. Redirecting to login page...
+                注册成功，正在前往登录页面...
             </Alert>
         )}
 
@@ -72,24 +72,24 @@ function RegisterPage() {
                 <Stack gap="md">
                     <TextInput
                     required
-                    label="Name"
-                    placeholder="Your name"
+                    label="用户名"
+                    placeholder="输入用户名"
                     {...form.getInputProps('name')}
                     />
                     <TextInput
                     required
-                    label="Email"
-                    placeholder="your@email.com"
+                    label="邮箱"
+                    placeholder="xxx@email.com"
                     {...form.getInputProps('email')}
                     />
                     <PasswordInput
                     required
-                    label="Password"
-                    placeholder="Choose a password (min. 6 characters)"
+                    label="密码"
+                    placeholder="输入你的密码(不可小于6位)"
                     {...form.getInputProps('password')}
                     />
                     <Button type="submit" fullWidth mt="md">
-                    Register
+                    注册
                     </Button>
                 </Stack>
             </form>
@@ -97,9 +97,9 @@ function RegisterPage() {
 
 
          <Text ta="center" mt="md" size="sm">
-             Already have an account?{' '}
+             已经有账号了?{' '}
              <Anchor component={RouterLink} to="/login" fw={500}>
-                 Login here
+                 点我登录
             </Anchor>
         </Text>
       </Paper>

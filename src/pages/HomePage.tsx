@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 // 确保你的类型文件路径正确 (可能是 ../types 或 ../types/index 等)
 import { IPost, PaginationInfo } from '../types/types';
-import { postApiService } from '../services/PostApiService';
+import { postApiService } from '../services/PostService';
 // 确保导入的是 Mantine 版本的组件，并且路径正确
 import PostForm, { PostFormData } from '../components/post/PostForm';
 import PostList from '../components/post/PostList';
