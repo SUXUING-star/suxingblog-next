@@ -2,7 +2,7 @@
 import React from 'react';
 import { IPost } from '../../types/types'; // 确保 IPost 类型定义了作者信息
 import { Paper, Title, Text, Badge, Group, ActionIcon, Tooltip, Stack, Anchor } from '@mantine/core';
-import { IconPencil, IconTrash, IconExternalLink ,IconMessageCircle , IconUser } from '@tabler/icons-react';
+import { IconPencil, IconTrash, IconExternalLink ,IconMessageCircle} from '@tabler/icons-react';
 import { Link as RouterLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext'; // 引入 useAuth
 
