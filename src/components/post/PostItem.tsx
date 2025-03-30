@@ -2,7 +2,7 @@
 import React from 'react';
 import { IPost } from '../../types/types'; // 确保 IPost 类型定义了作者信息
 import { Paper, Title, Text, Badge, Group, ActionIcon, Tooltip, Stack, Anchor } from '@mantine/core';
-import { IconPencil, IconTrash, IconExternalLink } from '@tabler/icons-react';
+import { IconPencil, IconTrash, IconExternalLink ,IconMessageCircle , IconUser } from '@tabler/icons-react';
 import { Link as RouterLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext'; // 引入 useAuth
 
@@ -23,8 +23,8 @@ const PostItem: React.FC<PostItemProps> = ({ post, onEdit, onDelete, isEditingOt
 	// !! 重要 !!: 请确保 post 对象上有 authorId 字段，并且 user 对象上有 id 字段
 	// 如果你的作者 ID 字段名是别的（比如 post.author._id），请修改这里
 	const isCurrentUserAuthor = user && post.authorId && user.id === post.authorId;
-    // 如果你的 post.author 是一个对象，可能是这样：
-    // const isCurrentUserAuthor = user && post.author && user.id === post.author._id; // 或者 post.author.id
+	// 如果你的 post.author 是一个对象，可能是这样：
+	// const isCurrentUserAuthor = user && post.author && user.id === post.author._id; // 或者 post.author.id
 
 	return (
 		<Paper shadow="xs" p="lg" radius="md" withBorder>
@@ -40,12 +40,29 @@ const PostItem: React.FC<PostItemProps> = ({ post, onEdit, onDelete, isEditingOt
 					</Badge>
 				</Group>
 
-				<Text size="xs" c="dimmed">
-					创建于: {new Date(post.createdAt).toLocaleDateString()}
-					{post.isPublished && post.publishedAt && ` • 发布于 ${new Date(post.publishedAt).toLocaleDateString()}`}
-					{/* 可以选择性地显示作者信息，如果 post 对象里有的话 */}
-					{/* {post.author?.name && ` • 作者: ${post.author.name}`} */}
-				</Text>
+				<Group justify="space-between" align="center" wrap="wrap" /* 控制换行 */ >
+					{/* 日期信息 */}
+					<Text size="xs" c="dimmed">
+						创建于: {new Date(post.createdAt).toLocaleDateString()}
+						{post.isPublished && post.publishedAt && ` • 发布于: ${new Date(post.publishedAt).toLocaleDateString()}`}
+					</Text>
+
+					{/* 作者和评论数组合 */}
+					<Group gap="sm" align="center">
+
+						<Text size="xs" c="dimmed" component="span">•</Text> {/* 分隔符 */}
+
+						{/* 评论数信息 */}
+						<Group gap={4} align="center">
+							<Tooltip label="评论数" withArrow position="bottom">
+								<IconMessageCircle size={14} stroke={1.5} style={{ verticalAlign: 'middle', marginBottom: '2px' }} />
+							</Tooltip>
+							<Text size="xs" c="dimmed" component="span">
+								{post.commentCount ?? 0} {/* 显示评论数，提供默认值 0 */}
+							</Text>
+						</Group>
+					</Group>
+				</Group>
 
 				{post.excerpt && <Text size="sm" c="dimmed" lineClamp={2}>{post.excerpt}</Text>}
 

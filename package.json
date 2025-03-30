@@ -24,6 +24,7 @@
     "@mantine/core": "^7.17.3",
     "@mantine/form": "^7.17.3",
     "@mantine/hooks": "^7.17.3",
+    "@mantine/notifications": "^7.17.3",
     "@tabler/icons-react": "^3.31.0",
     "react": "^19.0.0",
     "react-router-dom": "^7.4.0"

@@ -310,9 +310,6 @@ function HomePage() {
 				overlayProps={{ backgroundOpacity: 0.6, blur: 4 }} // 背景遮罩样式
 				closeOnClickOutside={false}     // 点击外部不关闭，防止误操作
 				transitionProps={{ transition: 'pop', duration: 300, timingFunction: 'ease' }} // 弹出动画
-			// closeOnEscape={false}        // 按 ESC 不关闭 (可选)
-			// lockScroll={true}            // 打开时锁定背景滚动 (Mantine 默认)
-			// withinPortal={true}          // 渲染到 Portal (Mantine 默认)
 			>
 				{/* Modal 内容：渲染 PostForm 组件 */}
 				<PostForm

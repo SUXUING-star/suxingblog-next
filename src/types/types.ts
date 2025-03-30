@@ -11,6 +11,7 @@ export interface IPost {
   publishedAt?: string; // 日期通常作为 ISO 字符串传输
   createdAt: string;   // 日期通常作为 ISO 字符串传输
   updatedAt: string;   // 日期通常作为 ISO 字符串传输
+  commentCount: number; // <--- 需要这个
 }
 
 // 可选：如果需要明确分页信息类型
@@ -39,6 +40,7 @@ export interface UserData {
 }
 export interface SimpleComment {
 	_id: string;
+	authorId: string; // <-- !! 添加 authorId !!
 	authorName: string;
 	content: string;
 	createdAt: string; // ISO Date String
