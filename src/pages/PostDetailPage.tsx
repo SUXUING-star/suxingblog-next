@@ -1,12 +1,13 @@
 // src/pages/PostDetailPage.tsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link as RouterLink, useNavigate } from 'react-router-dom';
-import { IPost, SimpleComment } from '../types/types';
+import { IPost, SimpleComment } from '../types/types'; // 确保类型路径正确
 import { postApiService } from '../services/PostService';
 import { commentApiService } from '../services/CommentService';
 import { useAuth } from '../context/AuthContext';
 import CommentList from '../components/comment/CommentList';
 import CommentForm from '../components/comment/CommentForm';
+import PostForm, { PostFormData } from '../components/post/PostForm'; // 导入 PostForm
 import {
 	Container,
 	Title,
@@ -24,39 +25,45 @@ import {
 	useMantineTheme,
 	Center,
 	Box,
-	ActionIcon, // <-- 导入 ActionIcon
-	Tooltip,    // <-- 导入 Tooltip
-	Notification, // <-- （可选）用于删除成功/失败提示
-	rem,        // <-- （可选）用于图标大小
+	ActionIcon,
+	Tooltip,
+	Notification,
+	rem,
+	Modal, // 导入 Modal
 } from '@mantine/core';
-import { IconAlertCircle, IconArrowLeft, IconPencil, IconTrash, IconCheck } from '@tabler/icons-react'; // <-- 导入编辑和删除图标
-import { useDisclosure } from '@mantine/hooks'; // <-- （可选）用于控制通知
+import { IconAlertCircle, IconArrowLeft, IconPencil, IconTrash, IconCheck } from '@tabler/icons-react';
+import { useDisclosure } from '@mantine/hooks'; // 确保已导入
 
 function PostDetailPage() {
 	// --- Hooks ---
-	const { slug } = useParams<{ slug: string }>(); // 获取 URL 参数 :slug
-	const navigate = useNavigate();                // 用于页面导航
-	const theme = useMantineTheme();               // 获取 Mantine 主题 (可选)
-	const { token, user } = useAuth(); // <-- 获取 user 对象                 
+	const { slug } = useParams<{ slug: string }>();
+	const navigate = useNavigate();
+	const theme = useMantineTheme();
+	const { token, user } = useAuth(); // 获取 user 对象
+
 	// --- 帖子相关 State ---
-	const [post, setPost] = useState<IPost | null>(null);         // 存储帖子数据
-	const [isLoadingPost, setIsLoadingPost] = useState(true);    // 帖子加载状态
-	const [errorPost, setErrorPost] = useState<string | null>(null); // 帖子加载错误
-	const [isDeleting, setIsDeleting] = useState(false); // <-- 删除加载状态
-	const [deleteError, deleteErrorHandlers] = useDisclosure(false); // <-- 控制删除错误通知
-	const [deleteErrorMessage, setDeleteErrorMessage] = useState(''); // <-- 删除错误消息
-	const [showSuccess, successHandlers] = useDisclosure(false); // <-- 控制成功通知
-	const [successMessage, setSuccessMessage] = useState(''); // <-- 成功消息
+	const [post, setPost] = useState<IPost | null>(null);
+	const [isLoadingPost, setIsLoadingPost] = useState(true);
+	const [errorPost, setErrorPost] = useState<string | null>(null);
+	const [isDeleting, setIsDeleting] = useState(false); // 删除加载状态
+	const [deleteError, deleteErrorHandlers] = useDisclosure(false); // 控制删除错误通知
+	const [deleteErrorMessage, setDeleteErrorMessage] = useState(''); // 删除错误消息
+	const [showSuccess, successHandlers] = useDisclosure(false); // 控制成功通知
+	const [successMessage, setSuccessMessage] = useState(''); // 成功消息
+
+	// --- Modal 和表单状态 ---
+	const [modalOpened, modalHandlers] = useDisclosure(false); // 控制 Modal 显示/隐藏
+	const [editingPost, setEditingPost] = useState<IPost | null>(null); // 驱动 Modal 中的 PostForm
+	const [formError, setFormError] = useState<string | null>(null); // Modal 内表单提交的错误状态
+	const [showFormError, formErrorHandlers] = useDisclosure(false); // 控制 Modal 错误通知
 
 	// --- 评论相关 State ---
-	const [comments, setComments] = useState<SimpleComment[]>([]);    // 存储评论列表
-	const [isCommentsLoading, setIsCommentsLoading] = useState(false); // 评论加载状态
-	const [errorComments, setErrorComments] = useState<string | null>(null);// 评论加载/提交错误
-	const [isSubmittingComment, setIsSubmittingComment] = useState(false); // 评论提交状态
+	const [comments, setComments] = useState<SimpleComment[]>([]);
+	const [isCommentsLoading, setIsCommentsLoading] = useState(false);
+	const [errorComments, setErrorComments] = useState<string | null>(null);
+	const [isSubmittingComment, setIsSubmittingComment] = useState(false);
 
-
-	const isCurrentUserAuthor = !!(user && post && post.authorId && user.id === post.authorId.toString());
-	// --- 获取评论的函数 (useCallback 优化，依赖为空保证引用稳定) ---
+	// --- 获取评论的函数 ---
 	const fetchComments = useCallback(async (postId: string) => {
 		setIsCommentsLoading(true);
 		setErrorComments(null); // 清除旧的评论错误
@@ -81,87 +88,145 @@ function PostDetailPage() {
 		}
 	}, []); // 空依赖数组，fetchComments 引用稳定
 
-	// --- 获取帖子详情的 Effect (依赖 slug) ---
+	// --- 封装获取帖子详情逻辑，以便在更新后调用 ---
+	const fetchPostDetails = useCallback(async () => {
+		if (!slug) {
+			setErrorPost("Post identifier (slug) is missing in the URL.");
+			// setIsLoadingPost(false); // Maybe not needed if just refreshing
+			return;
+		}
+		// Consider showing a subtle loading indicator or none for refresh
+		// setIsLoadingPost(true);
+		setErrorPost(null);
+		console.log(`>>> Re-fetching post with slug: ${slug}`);
+		try {
+			const response = await postApiService.getPostBySlug(slug);
+			if (response.success && response.data) {
+				setPost(response.data); // Update post state
+			} else {
+				const errMsg = Array.isArray(response.message) ? response.message.join(', ') : response.message;
+				throw new Error(errMsg || 'Failed to reload post');
+			}
+		} catch (err: any) {
+			console.error("Re-fetch post detail error:", err);
+			const errorMessage = err instanceof Error ? err.message : 'Failed to reload post details.';
+			setErrorPost(errorMessage); // Set page error state
+		} finally {
+			// setIsLoadingPost(false);
+		}
+	}, [slug]); // Dependency: slug
+
+	// --- 获取帖子详情的 Effect (依赖 slug, fetchComments) ---
 	useEffect(() => {
-		// 定义异步函数来获取帖子
-		const fetchPost = async () => {
-			// 检查 slug 是否存在
+		const initialFetch = async () => {
 			if (!slug) {
 				setErrorPost("Post identifier (slug) is missing in the URL.");
 				setIsLoadingPost(false);
 				return;
 			}
-
-			setIsLoadingPost(true); // 开始加载帖子
-			setErrorPost(null);   // 清除旧的帖子错误
-			console.log(`>>> Fetching post with slug: ${slug}`);
-
+			setIsLoadingPost(true);
+			setErrorPost(null);
+			console.log(`>>> Initial fetching post with slug: ${slug}`);
 			try {
-				// 调用 API 获取帖子
-				const response = await postApiService.getPostBySlug(slug); // 使用 slug 获取
+				const response = await postApiService.getPostBySlug(slug);
 				console.log(`<<< Post API Response Status: ${response.success}`);
-
 				if (response.success && response.data) {
-					setPost(response.data); // 更新帖子状态
-					// --- !! 帖子加载成功后，立即触发评论加载 !! ---
-					fetchComments(response.data._id); // 使用获取到的 post._id
+					setPost(response.data);
+					fetchComments(response.data._id); // Fetch comments after post loads
 				} else {
-					// 处理 API 返回失败
 					const errMsg = Array.isArray(response.message) ? response.message.join(', ') : response.message;
-					// 根据状态码判断是 404 还是其他错误
-					// if (response.status === 404) { // 假设 handleResponse 会保留 status 或需要自己处理
-					//   throw new Error('Post not found');
-					// } else {
 					throw new Error(errMsg || 'Failed to load post');
-					// }
 				}
 			} catch (err: any) {
-				console.error("Fetch post detail error:", err);
+				console.error("Initial fetch post detail error:", err);
 				const errorMessage = err instanceof Error ? err.message : 'Failed to load post details.';
-				setErrorPost(errorMessage); // 设置帖子错误状态
-				setPost(null);           // 清空帖子数据
+				setErrorPost(errorMessage);
+				setPost(null);
 			} finally {
-				setIsLoadingPost(false); // 结束帖子加载状态
+				setIsLoadingPost(false);
 			}
 		};
+		initialFetch();
+	}, [slug, fetchComments]); // Dependencies: slug, fetchComments
 
-		fetchPost(); // 执行获取函数
-	}, [slug, fetchComments]); // 依赖 slug 和 fetchComments (fetchComments 引用是稳定的)
-	const handleEdit = () => {
-		if (post) {
-			// 跳转到编辑页面，你需要确保这个路由存在
-			// 路径可以根据你的路由设置调整，比如 `/edit-post/${post._id}`
-			navigate(`/posts/${post.slug}/edit`);
-			console.log(`Navigating to edit page for slug: ${post.slug}`);
+	// --- 处理评论提交的函数 ---
+	const handleCommentSubmit = async (content: string) => {
+		if (!post?._id || !token) {
+			const errorMsg = "Cannot submit comment. Post not loaded or you are not logged in.";
+			setErrorComments(errorMsg);
+			console.error("Comment submission failed:", errorMsg);
+			return;
+		}
+		setIsSubmittingComment(true);
+		setErrorComments(null);
+		console.log(`>>> Submitting comment for post: ${post._id}`);
+		try {
+			const response = await commentApiService.addComment(post._id, content);
+			console.log(`<<< Add Comment API Response Status: ${response.success}`);
+			if (response.success && response.data) {
+				console.log('Comment added successfully:', response.data);
+				// Re-fetch comments to show the new one
+				await fetchComments(post._id);
+				// Also update post's comment count locally for immediate feedback
+				setPost(prevPost => prevPost ? { ...prevPost, commentCount: (prevPost.commentCount ?? 0) + 1 } : null);
+			} else {
+				const errMsg = Array.isArray(response.message) ? response.message.join(', ') : response.message;
+				throw new Error(errMsg || 'Failed to submit comment');
+			}
+		} catch (err: any) {
+			console.error("Submit comment error:", err);
+			const message = err instanceof Error ? err.message : 'An error occurred while posting the comment.';
+			setErrorComments(message);
+		} finally {
+			setIsSubmittingComment(false);
 		}
 	};
 
-	// --- !! 新增：处理删除帖子的函数 !! ---
+	// --- 实现删除评论的回调函数 ---
+	const handleCommentDeleted = (deletedCommentId: string) => {
+		console.log(`Callback: Deleting comment ${deletedCommentId} from state.`);
+		setComments(currentComments => currentComments.filter(comment => comment._id !== deletedCommentId));
+		// Update post's comment count
+		setPost(prevPost => prevPost ? { ...prevPost, commentCount: Math.max(0, (prevPost.commentCount ?? 0) - 1) } : null);
+		// Notification is handled within CommentList or shown via successMessage state if needed here
+	};
+
+	// --- 判断当前用户是否为帖子作者 ---
+	const isCurrentUserAuthor = !!(user && post && post.authorId && user.id === post.authorId.toString());
+
+	// --- 处理编辑帖子的函数，改为打开 Modal ---
+	const handleEdit = () => {
+		if (post) {
+			console.log(`Opening edit modal for post: ${post.title}`);
+			setEditingPost(post);    // Set data for the form
+			setFormError(null);      // Clear previous form errors
+			formErrorHandlers.close(); // Close form error notification
+			successHandlers.close(); // Close potential success notifications
+			modalHandlers.open();    // Open the modal
+		}
+	};
+
+	// --- 处理删除帖子的函数 ---
 	const handleDelete = async () => {
 		if (!post) return;
-
-		// 确认弹窗
 		if (!window.confirm('确定要删除这篇帖子吗？删除后不可恢复！')) {
 			return;
 		}
-
 		setIsDeleting(true);
 		setDeleteErrorMessage('');
 		deleteErrorHandlers.close();
-		successHandlers.close();
-
+		successHandlers.close(); // Clear success notifications
+		formErrorHandlers.close(); // Clear form error notifications
 		try {
 			console.log(`>>> Deleting post with ID: ${post._id}`);
 			const response = await postApiService.deletePost(post._id);
 			console.log(`<<< Delete Post API Response Status: ${response.success}`);
-
 			if (response.success) {
 				setSuccessMessage('帖子已成功删除！即将返回主页...');
 				successHandlers.open();
-				// 等待短暂时间显示消息，然后跳转
 				setTimeout(() => {
-					navigate('/'); // 跳转回主页
-				}, 1500); // 延迟 1.5 秒
+					navigate('/'); // Redirect to homepage
+				}, 1500); // Delay for user to see message
 			} else {
 				const errMsg = Array.isArray(response.message) ? response.message.join(', ') : response.message;
 				throw new Error(errMsg || '删除帖子失败');
@@ -170,81 +235,69 @@ function PostDetailPage() {
 			console.error("Delete post error:", err);
 			const errorMessage = err instanceof Error ? err.message : '删除帖子时发生未知错误。';
 			setDeleteErrorMessage(errorMessage);
-			deleteErrorHandlers.open(); // 显示错误通知
+			deleteErrorHandlers.open(); // Show delete error notification
 		} finally {
-			setIsDeleting(false); // 结束删除状态
+			setIsDeleting(false); // Finish deleting state
 		}
 	};
-	// --- 处理评论提交的函数 ---
-	const handleCommentSubmit = async (content: string) => {
-		// 再次检查 postId 和 token，理论上此时 post 不应为 null
-		if (!post?._id || !token) {
-			const errorMsg = "Cannot submit comment. Post not loaded or you are not logged in.";
-			setErrorComments(errorMsg); // 设置评论区错误
-			console.error("Comment submission failed:", errorMsg);
-			return; // 直接返回，阻止提交
-			// 或者: throw new Error(errorMsg); 让 CommentForm 捕获并显示
-		}
 
-		setIsSubmittingComment(true); // 开始提交状态
-		setErrorComments(null);      // 清除旧评论错误
-		console.log(`>>> Submitting comment for post: ${post._id}`);
+	// --- 处理 Modal 内 PostForm 提交的函数 ---
+	const handleModalFormSubmit = async (data: PostFormData) => {
+		if (!editingPost) return; // Defensive check
+
+		setFormError(null);       // Clear previous form errors
+		formErrorHandlers.close();
+		successHandlers.close();  // Clear previous success messages
+
+		// The button inside PostForm handles its own loading state
 
 		try {
-			// 调用添加评论的 API
-			const response = await commentApiService.addComment(post._id, content);
-			console.log(`<<< Add Comment API Response Status: ${response.success}`);
+			console.log(`>>> Updating post via modal, ID: ${editingPost._id}`);
+			const response = await postApiService.updatePost(editingPost._id, data);
+			console.log(`<<< Update Post API Response Status: ${response.success}`);
 
-			if (response.success && response.data) {
-				// 评论添加成功
-				console.log('Comment added successfully:', response.data);
-				// --- !! 成功后重新获取评论列表 !! ---
-				// 可以直接将新评论添加到现有列表前端以获得更快反馈 (可选优化)
-				// setComments(prev => [ /* 构造新评论对象 */, ...prev ]);
-				// 这里选择重新获取完整列表，保证数据一致性
-				await fetchComments(post._id);
+			if (response.success) {
+				// Success
+				setSuccessMessage('帖子已成功更新！'); // Set success message (page level)
+				successHandlers.open();             // Show success notification (page level)
+				modalHandlers.close();              // Close the modal
+
+				// Refresh the post data on the current page
+				await fetchPostDetails(); // Call the re-fetch function
+
 			} else {
-				// API 返回失败
+				// API returned failure
 				const errMsg = Array.isArray(response.message) ? response.message.join(', ') : response.message;
-				throw new Error(errMsg || 'Failed to submit comment');
+				throw new Error(errMsg || '更新帖子失败');
 			}
 		} catch (err: any) {
-			// 捕获提交错误
-			console.error("Submit comment error:", err);
-			const message = err instanceof Error ? err.message : 'An error occurred while posting the comment.';
-			setErrorComments(message); // 设置评论错误状态，可以在 CommentForm 或页面上显示
-			// 也可以选择抛出错误，让 CommentForm 处理
-			// throw err;
-		} finally {
-			setIsSubmittingComment(false); // 结束提交状态
+			// Catch update error
+			console.error("Update post error (modal):", err);
+			const errorMessage = err instanceof Error ? err.message : '更新帖子时发生未知错误。';
+			setFormError(errorMessage); // Set error state for the modal form
+			formErrorHandlers.open();   // Show error notification inside/above the modal
+			// Do not close modal on failure
 		}
+		// finally {} // PostForm's button handles its loading state
 	};
-	// --- !! 实现删除评论的回调函数 !! ---
-	const handleCommentDeleted = (deletedCommentId: string) => {
-		console.log(`Callback: Deleting comment ${deletedCommentId} from state.`);
-		// 更新评论列表状态
-		setComments(currentComments => currentComments.filter(comment => comment._id !== deletedCommentId));
-		// 更新帖子的评论数
-		setPost(prevPost => prevPost ? { ...prevPost, commentCount: prevPost.commentCount - 1 } : null);
-		// 不在这里显示 notification，因为 CommentList 内部已经显示了
-	};
-
 
 	// --- 面包屑导航数据 ---
 	const breadcrumbItems = [
 		{ title: '主页', href: '/' },
-		// 使用帖子标题，如果 post 还未加载则显示 'Post'
-		{ title: post?.title || 'Post Details', href: '#' }, // 当前页面不实际导航
-	].map((item, index) => (
+		{ title: post?.title || '帖子详情', href: '#' }, // Current page, no actual link
+	].map((item, index, arr) => (
 		item.href === '#' ? (
-			<Text key={index} size="sm" fw={500}>{item.title}</Text> // 当前页加粗
+			// Render current page title as Text (not Anchor)
+			<Text key={index} size="sm" fw={index === arr.length - 1 ? 700 : 400} c={index === arr.length - 1 ? 'dark' : 'dimmed'}>
+				{item.title}
+			</Text>
 		) : (
+			// Render previous pages as Anchor links
 			<Anchor component={RouterLink} to={item.href} key={index} size="sm">
 				{item.title}
 			</Anchor>
 		)
 	));
-
 
 	// --- 渲染逻辑 ---
 
@@ -252,9 +305,9 @@ function PostDetailPage() {
 	if (isLoadingPost) {
 		return (
 			<Container size="md" py="xl">
-				<Center h={400}> {/* 增加高度 */}
+				<Center h={400}> {/* Increased height */}
 					<Loader color="blue" size="lg" />
-					<Text ml="md" c="dimmed">Loading Post...</Text>
+					<Text ml="md" c="dimmed">正在加载帖子...</Text>
 				</Center>
 			</Container>
 		);
@@ -264,14 +317,14 @@ function PostDetailPage() {
 	if (errorPost) {
 		return (
 			<Container size="md" py="xl">
-				<Alert icon={<IconAlertCircle size={18} />} title="Error Loading Post" color="red" radius="md" variant='light'>
+				<Alert icon={<IconAlertCircle size={18} />} title="加载帖子出错" color="red" radius="md" variant='light'>
 					{errorPost}
 				</Alert>
 				<Button
 					mt="lg"
 					leftSection={<IconArrowLeft size={16} />}
 					variant="outline"
-					onClick={() => navigate('/')} // 返回首页
+					onClick={() => navigate('/')} // Go back to homepage
 				>
 					返回主页
 				</Button>
@@ -279,16 +332,16 @@ function PostDetailPage() {
 		);
 	}
 
-	// 3. 如果帖子数据为 null (理论上会被 errorPost 覆盖，除非 API 成功但 data 为空)
+	// 3. 如果帖子数据为 null (Should be covered by errorPost, defensive check)
 	if (!post) {
 		return (
 			<Container size="md" py="xl">
-				<Text ta="center" c="dimmed">Post data could not be loaded.</Text>
+				<Text ta="center" c="dimmed">无法加载帖子数据。</Text>
 				<Center mt="lg">
 					<Button
 						leftSection={<IconArrowLeft size={16} />}
 						variant="outline"
-						onClick={() => navigate('/')} // 返回首页
+						onClick={() => navigate('/')} // Go back to homepage
 					>
 						返回主页
 					</Button>
@@ -299,154 +352,220 @@ function PostDetailPage() {
 
 	// --- 4. 帖子加载成功，渲染主要内容 ---
 	return (
-		<Container size="lg" py="xl">
-			{/* 面包屑 */}
-			<Breadcrumbs separator="›" mb="lg">{breadcrumbItems}</Breadcrumbs>
+		<> {/* Fragment to wrap page content and modal */}
+			<Container size="lg" py="xl">
+				{/* --- Page Level Notifications --- */}
+				{showSuccess && successMessage && (
+					<Notification
+						icon={<IconCheck style={{ width: rem(20), height: rem(20) }} />}
+						color="teal" title="成功" onClose={successHandlers.close} mb="md" withCloseButton>
+						{successMessage}
+					</Notification>
+				)}
+				{deleteError && deleteErrorMessage && (
+					<Notification
+						icon={<IconAlertCircle style={{ width: rem(20), height: rem(20) }} />}
+						color="red" title="删除失败" onClose={deleteErrorHandlers.close} mb="md" withCloseButton>
+						{deleteErrorMessage}
+					</Notification>
+				)}
+				{/* Post loading error handled above */}
+				{/* Comment errors handled within CommentList or CommentForm */}
 
-			{/* 使用 Stack 垂直排列帖子内容和评论区 */}
-			<Stack gap="xl">
+				{/* Breadcrumbs */}
+				<Breadcrumbs separator="›" mb="lg">{breadcrumbItems}</Breadcrumbs>
 
-				{/* 帖子内容卡片 */}
-				<Paper shadow="sm" p="xl" radius="md" withBorder>
-					<Stack gap="md">
-						{/* --- 标题和操作按钮组合 --- */}
-						<Group justify="space-between" align="flex-start">
-							{/* 帖子标题 */}
-							<Title order={1} size="h1" c="blue.8" style={{ flexGrow: 1, marginRight: theme.spacing.md }}> {/* 让标题占据更多空间 */}
-								{post.title}
-							</Title>
-							{/* --- 编辑和删除按钮 (仅作者可见) --- */}
-							{token && isCurrentUserAuthor && (
-								<Group gap="xs" wrap="nowrap"> {/* 防止按钮换行 */}
-									<Tooltip label="编辑帖子" withArrow>
-										<ActionIcon
-											variant="light"
-											color="yellow"
-											onClick={handleEdit}
-											disabled={isDeleting} // 删除时禁用编辑
-											aria-label="Edit Post"
-										>
-											<IconPencil size={18} />
-										</ActionIcon>
-									</Tooltip>
-									<Tooltip label="删除帖子" withArrow>
-										<ActionIcon
-											variant="light"
-											color="red"
-											onClick={handleDelete}
-											loading={isDeleting} // 显示加载状态
-											aria-label="Delete Post"
-										>
-											<IconTrash size={18} />
-										</ActionIcon>
-									</Tooltip>
+				{/* Stack for vertical layout */}
+				<Stack gap="xl">
+
+					{/* Post Content Card */}
+					<Paper shadow="sm" p="xl" radius="md" withBorder>
+						<Stack gap="md">
+							{/* Title and Action Buttons Group */}
+							<Group justify="space-between" align="flex-start" wrap="nowrap">
+								{/* Post Title */}
+								<Title order={1} size="h1" c="blue.8" style={{ flexGrow: 1, marginRight: theme.spacing.md, wordBreak: 'break-word' }}>
+									{post.title}
+								</Title>
+								{/* Edit and Delete Buttons (visible to author only) */}
+								{token && isCurrentUserAuthor && (
+									<Group gap="xs" wrap="nowrap"> {/* Prevent buttons wrapping */}
+										<Tooltip label="编辑帖子" withArrow>
+											<ActionIcon
+												variant="light"
+												color="yellow"
+												onClick={handleEdit}
+												disabled={isDeleting} // Disable edit while deleting
+												aria-label="Edit Post"
+											>
+												<IconPencil size={18} />
+											</ActionIcon>
+										</Tooltip>
+										<Tooltip label="删除帖子" withArrow>
+											<ActionIcon
+												variant="light"
+												color="red"
+												onClick={handleDelete}
+												loading={isDeleting} // Show loading state
+												aria-label="Delete Post"
+											>
+												<IconTrash size={18} />
+											</ActionIcon>
+										</Tooltip>
+									</Group>
+								)}
+							</Group>
+							{/* End: Title and Action Buttons */}
+
+							{/* Post Meta Info */}
+							<Group gap="sm" wrap="wrap">
+								<Text size="sm" c="dimmed">•</Text>
+								{/* Published Status Badge */}
+								{post.isPublished ? (
+									<Badge color="green" variant="light" size="sm">已发布</Badge>
+								) : (
+									<Badge color="yellow" variant="light" size="sm">草稿</Badge>
+								)}
+								{post.isPublished && post.publishedAt && (
+									<>
+										<Text size="sm" c="dimmed">•</Text>
+										<Text size="sm" c="dimmed">
+											发布于: {new Date(post.publishedAt).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}
+										</Text>
+									</>
+								)}
+								<Text size="sm" c="dimmed">•</Text>
+								<Text size="sm" c="dimmed">
+									更新于: {new Date(post.updatedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+								</Text>
+								{/* You might want to add Author Name here if available */}
+								{/* <Text size="sm" c="dimmed">•</Text>
+                                <Text size="sm" c="dimmed">作者: {post.authorName || '未知'}</Text> */}
+							</Group>
+
+							{/* Tags */}
+							{post.tags && post.tags.length > 0 && (
+								<Group gap={4} mt="xs">
+									{post.tags.map(tag => <Badge key={tag} color="blue" variant="outline" size="sm">{tag}</Badge>)}
 								</Group>
 							)}
-						</Group>
 
-						{/* 帖子元信息 */}
-						<Group gap="sm" wrap="wrap" /* style={{ marginTop: rem(-5), marginBottom: rem(5) }} */ >
-							<Text size="sm" c="dimmed">•</Text>
-							{/* 根据发布状态显示徽章或文字 */}
-							{post.isPublished ? (
-								<Badge color="green" variant="light" size="sm">已发布</Badge>
-							) : (
-								<Badge color="yellow" variant="light" size="sm">草稿</Badge>
-							)}
-							{post.isPublished && post.publishedAt && (
-								<>
-									<Text size="sm" c="dimmed">•</Text>
-									<Text size="sm" c="dimmed">
-										{new Date(post.publishedAt).toLocaleDateString('ch', { year: 'numeric', month: 'long', day: 'numeric' })}
-									</Text>
-								</>
-							)}
-							<Text size="sm" c="dimmed">•</Text>
-							<Text size="sm" c="dimmed">
-								更新于: {new Date(post.updatedAt).toLocaleDateString('ch', { month: 'short', day: 'numeric' })}
-							</Text>
-						</Group>
-
-						{/* 标签 */}
-						{post.tags && post.tags.length > 0 && (
-							<Group gap={4} mt="xs">
-								{post.tags.map(tag => <Badge key={tag} color="blue" variant="outline" size="sm">{tag}</Badge>)}
-							</Group>
-						)}
-
-						{/* 摘要 (如果存在) */}
-						{post.excerpt && (
-							<Text size="md" mt="sm" c="dimmed" fs="italic">
-								{post.excerpt}
-							</Text>
-						)}
-
-						{/* 内容分隔线 */}
-						<Divider my="lg" />
-
-						{/* 帖子内容 */}
-						{/* 使用 pre-wrap 保留换行和空格 */}
-						<Box style={{ lineHeight: 1.8, fontSize: theme.fontSizes.md }}>
-							{post.content.split('\n').map((paragraph, index) => (
-								// 使用 <br> 简单处理换行，或用 Mantine TypographyStylesProvider 处理 Markdown
-								<Text key={index} mb="md">
-									{paragraph || <> </>} {/* 使用   强制渲染空行 */}
+							{/* Excerpt (If you decide to bring it back or use it) */}
+							{/* {post.excerpt && (
+								<Text size="md" mt="sm" c="dimmed" fs="italic">
+									{post.excerpt}
 								</Text>
-							))}
-						</Box>
-					</Stack>
-				</Paper>
+							)} */}
 
-				{/* --- 评论区域卡片 --- */}
-				<Paper shadow="xs" p="xl" radius="md" withBorder>
-					<Title order={2} size="h3" mb="lg">
-						评论区 <Badge variant='light' circle size="lg">{comments.length}</Badge>
-					</Title>
+							{/* Content Divider */}
+							<Divider my="lg" />
 
-					{/* 渲染评论列表 */}
-					<CommentList
-						postId={post._id} // 传递帖子 ID
-						comments={comments}
-						isLoading={isCommentsLoading}
-						error={errorComments}
-						onCommentDeleted={handleCommentDeleted} // 传递回调函数
-					// 假设 CommentList 内部会使用 useAuth() 获取 user._id 进行比较
-					// 如果 CommentList 不使用 useAuth，则需要把 user._id 也传下去
-					// currentUserId={user?._id}
-					/>
+							{/* Post Content */}
+							{/* Use pre-wrap to preserve whitespace and newlines */}
+							{/* Rendering paragraphs manually might be better for styling */}
+							<Box style={{ lineHeight: 1.8, fontSize: theme.fontSizes.md }}>
+								{post.content.split('\n').map((paragraph, index) => (
+									// Render each line as a paragraph, handle empty lines
+									<Text key={index} mb="md">
+										{paragraph || <> </>} {/* Use non-breaking space for empty lines */}
+									</Text>
+								))}
+							</Box>
+						</Stack>
+					</Paper>
 
+					{/* Comments Section Card */}
+					<Paper shadow="xs" p="xl" radius="md" withBorder>
+						<Title order={2} size="h3" mb="lg">
+							评论区 <Badge variant='light' circle size="lg">{post.commentCount ?? comments.length}</Badge>
+							{/* Use post.commentCount if available and reliable, otherwise fallback to comments.length */}
+						</Title>
 
-					{/* 分隔线 */}
-					{comments.length > 0 && <Divider my="lg" />}
-
-					{/* 渲染评论表单 (仅登录用户) */}
-					{token ? (
-						<CommentForm
-							onSubmit={handleCommentSubmit}
-							isSubmitting={isSubmittingComment}
+						{/* Render Comment List */}
+						<CommentList
+							postId={post._id} // Pass post ID
+							comments={comments}
+							isLoading={isCommentsLoading}
+							error={errorComments}
+							onCommentDeleted={handleCommentDeleted} // Pass delete callback
+						// Pass current user ID if CommentList needs it for delete authorization check
+						// currentUserId={user?._id}
 						/>
-					) : (
-						<Center mt="lg">
-							<Text size="sm" c="dimmed">
-								<Anchor component={RouterLink} to="/login" inherit>登录</Anchor> 才能添加评论
-							</Text>
-						</Center>
-					)}
-				</Paper>
 
-				{/* 返回按钮 */}
-				<Button
-					mt="md" // 与评论区分开
-					leftSection={<IconArrowLeft size={16} />}
-					variant="subtle" // 更柔和的返回按钮
-					color="gray"
-					onClick={() => navigate(-1)} // 使用 navigate(-1) 返回历史记录上一页
-					style={{ alignSelf: 'flex-start' }}
-				>
-					返回上一页
-				</Button>
-			</Stack>
-		</Container>
+
+						{/* Divider */}
+						{comments.length > 0 && <Divider my="lg" />}
+
+						{/* Render Comment Form (only for logged-in users) */}
+						{token ? (
+							<CommentForm
+								onSubmit={handleCommentSubmit}
+								isSubmitting={isSubmittingComment}
+							/>
+						) : (
+							<Center mt="lg">
+								<Text size="sm" c="dimmed">
+									<Anchor component={RouterLink} to="/login" inherit>登录</Anchor> 后才能添加评论
+								</Text>
+							</Center>
+						)}
+					</Paper>
+
+					{/* Back Button */}
+					<Button
+						mt="md" // Spacing from comments section
+						leftSection={<IconArrowLeft size={16} />}
+						variant="subtle" // Softer style
+						color="gray"
+						onClick={() => navigate(-1)} // Use navigate(-1) to go back in history
+						style={{ alignSelf: 'flex-start' }}
+					>
+						返回上一页
+					</Button>
+				</Stack>
+			</Container>
+
+			{/* --- Edit Post Modal --- */}
+			<Modal
+				opened={modalOpened}
+				onClose={modalHandlers.close}
+				title={<Title order={3}>编辑帖子</Title>} // Title is fixed for editing
+				size="xl" // Adjust size as needed
+				centered
+				overlayProps={{ backgroundOpacity: 0.6, blur: 4 }}
+				closeOnClickOutside={false} // Prevent closing on outside click
+				transitionProps={{ transition: 'pop', duration: 300, timingFunction: 'ease' }}
+				zIndex={1001} // Ensure modal is above other elements if needed
+			>
+				{/* Error Alert for Form Submission inside Modal */}
+				{showFormError && formError && (
+					<Alert
+						color="red"
+						title="更新失败"
+						icon={<IconAlertCircle size={16} />}
+						mb="lg" // Spacing below alert
+						withCloseButton
+						onClose={() => { setFormError(null); formErrorHandlers.close(); }} // Clear error on close
+						variant="light" // Or 'filled'
+					>
+						{formError}
+					</Alert>
+				)}
+				{/* Render PostForm Component */}
+				{/* Ensure editingPost is not null before rendering */}
+				{editingPost && (
+					<PostForm
+						// Key ensures form resets when different post is edited
+						key={`edit-${editingPost._id}`}
+						initialData={editingPost}      // Pass current post data
+						onSubmit={handleModalFormSubmit} // Use the modal-specific submit handler
+						onCancel={modalHandlers.close} // Close modal on form cancel
+					// Pass availableTags if needed, e.g., from post or a global state/fetch
+					// availableTags={post?.tags || []}
+					/>
+				)}
+			</Modal>
+		</> // End Fragment
 	);
 }
 
