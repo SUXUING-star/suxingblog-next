@@ -1,16 +1,12 @@
 // src/pages/PostDetailPage.tsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link as RouterLink, useNavigate } from 'react-router-dom';
-// 确保导入类型路径正确
 import { IPost, SimpleComment } from '../types/types';
 import { postApiService } from '../services/PostService';
 import { commentApiService } from '../services/CommentService';
-// 导入 AuthContext 以检查登录状态
 import { useAuth } from '../context/AuthContext';
-// 导入新创建的评论组件
 import CommentList from '../components/comment/CommentList';
 import CommentForm from '../components/comment/CommentForm';
-// 导入 Mantine 组件
 import {
 	Container,
 	Title,
@@ -21,28 +17,36 @@ import {
 	Loader,
 	Alert,
 	Button,
-	Breadcrumbs, // Mantine 面包屑
+	Breadcrumbs,
 	Anchor,
-	Paper,      // 用于卡片效果
-	Divider,    // 分隔线
+	Paper,
+	Divider,
 	useMantineTheme,
-	Center,     // 居中
-	Box,        // 通用容器
+	Center,
+	Box,
+	ActionIcon, // <-- 导入 ActionIcon
+	Tooltip,    // <-- 导入 Tooltip
+	Notification, // <-- （可选）用于删除成功/失败提示
+	rem,        // <-- （可选）用于图标大小
 } from '@mantine/core';
-// 导入图标
-import { IconAlertCircle, IconArrowLeft } from '@tabler/icons-react';
+import { IconAlertCircle, IconArrowLeft, IconPencil, IconTrash, IconCheck } from '@tabler/icons-react'; // <-- 导入编辑和删除图标
+import { useDisclosure } from '@mantine/hooks'; // <-- （可选）用于控制通知
 
 function PostDetailPage() {
 	// --- Hooks ---
 	const { slug } = useParams<{ slug: string }>(); // 获取 URL 参数 :slug
 	const navigate = useNavigate();                // 用于页面导航
 	const theme = useMantineTheme();               // 获取 Mantine 主题 (可选)
-	const { token } = useAuth();                   // 获取登录令牌，用于判断是否登录
-
+	const { token, user } = useAuth(); // <-- 获取 user 对象                 
 	// --- 帖子相关 State ---
 	const [post, setPost] = useState<IPost | null>(null);         // 存储帖子数据
 	const [isLoadingPost, setIsLoadingPost] = useState(true);    // 帖子加载状态
 	const [errorPost, setErrorPost] = useState<string | null>(null); // 帖子加载错误
+	const [isDeleting, setIsDeleting] = useState(false); // <-- 删除加载状态
+	const [deleteError, deleteErrorHandlers] = useDisclosure(false); // <-- 控制删除错误通知
+	const [deleteErrorMessage, setDeleteErrorMessage] = useState(''); // <-- 删除错误消息
+	const [showSuccess, successHandlers] = useDisclosure(false); // <-- 控制成功通知
+	const [successMessage, setSuccessMessage] = useState(''); // <-- 成功消息
 
 	// --- 评论相关 State ---
 	const [comments, setComments] = useState<SimpleComment[]>([]);    // 存储评论列表
@@ -50,6 +54,8 @@ function PostDetailPage() {
 	const [errorComments, setErrorComments] = useState<string | null>(null);// 评论加载/提交错误
 	const [isSubmittingComment, setIsSubmittingComment] = useState(false); // 评论提交状态
 
+
+	const isCurrentUserAuthor = !!(user && post && post.authorId && user.id === post.authorId.toString());
 	// --- 获取评论的函数 (useCallback 优化，依赖为空保证引用稳定) ---
 	const fetchComments = useCallback(async (postId: string) => {
 		setIsCommentsLoading(true);
@@ -121,7 +127,54 @@ function PostDetailPage() {
 
 		fetchPost(); // 执行获取函数
 	}, [slug, fetchComments]); // 依赖 slug 和 fetchComments (fetchComments 引用是稳定的)
+	const handleEdit = () => {
+		if (post) {
+			// 跳转到编辑页面，你需要确保这个路由存在
+			// 路径可以根据你的路由设置调整，比如 `/edit-post/${post._id}`
+			navigate(`/posts/${post.slug}/edit`);
+			console.log(`Navigating to edit page for slug: ${post.slug}`);
+		}
+	};
 
+	// --- !! 新增：处理删除帖子的函数 !! ---
+	const handleDelete = async () => {
+		if (!post) return;
+
+		// 确认弹窗
+		if (!window.confirm('确定要删除这篇帖子吗？删除后不可恢复！')) {
+			return;
+		}
+
+		setIsDeleting(true);
+		setDeleteErrorMessage('');
+		deleteErrorHandlers.close();
+		successHandlers.close();
+
+		try {
+			console.log(`>>> Deleting post with ID: ${post._id}`);
+			const response = await postApiService.deletePost(post._id);
+			console.log(`<<< Delete Post API Response Status: ${response.success}`);
+
+			if (response.success) {
+				setSuccessMessage('帖子已成功删除！即将返回主页...');
+				successHandlers.open();
+				// 等待短暂时间显示消息，然后跳转
+				setTimeout(() => {
+					navigate('/'); // 跳转回主页
+				}, 1500); // 延迟 1.5 秒
+			} else {
+				const errMsg = Array.isArray(response.message) ? response.message.join(', ') : response.message;
+				throw new Error(errMsg || '删除帖子失败');
+			}
+		} catch (err: any) {
+			console.error("Delete post error:", err);
+			const errorMessage = err instanceof Error ? err.message : '删除帖子时发生未知错误。';
+			setDeleteErrorMessage(errorMessage);
+			deleteErrorHandlers.open(); // 显示错误通知
+		} finally {
+			setIsDeleting(false); // 结束删除状态
+		}
+	};
 	// --- 处理评论提交的函数 ---
 	const handleCommentSubmit = async (content: string) => {
 		// 再次检查 postId 和 token，理论上此时 post 不应为 null
@@ -256,10 +309,40 @@ function PostDetailPage() {
 				{/* 帖子内容卡片 */}
 				<Paper shadow="sm" p="xl" radius="md" withBorder>
 					<Stack gap="md">
-						{/* 帖子标题 */}
-						<Title order={1} size="h1" c="blue.8">
-							{post.title}
-						</Title>
+						{/* --- 标题和操作按钮组合 --- */}
+						<Group justify="space-between" align="flex-start">
+							{/* 帖子标题 */}
+							<Title order={1} size="h1" c="blue.8" style={{ flexGrow: 1, marginRight: theme.spacing.md }}> {/* 让标题占据更多空间 */}
+								{post.title}
+							</Title>
+							{/* --- 编辑和删除按钮 (仅作者可见) --- */}
+							{token && isCurrentUserAuthor && (
+								<Group gap="xs" wrap="nowrap"> {/* 防止按钮换行 */}
+									<Tooltip label="编辑帖子" withArrow>
+										<ActionIcon
+											variant="light"
+											color="yellow"
+											onClick={handleEdit}
+											disabled={isDeleting} // 删除时禁用编辑
+											aria-label="Edit Post"
+										>
+											<IconPencil size={18} />
+										</ActionIcon>
+									</Tooltip>
+									<Tooltip label="删除帖子" withArrow>
+										<ActionIcon
+											variant="light"
+											color="red"
+											onClick={handleDelete}
+											loading={isDeleting} // 显示加载状态
+											aria-label="Delete Post"
+										>
+											<IconTrash size={18} />
+										</ActionIcon>
+									</Tooltip>
+								</Group>
+							)}
+						</Group>
 
 						{/* 帖子元信息 */}
 						<Group gap="sm" wrap="wrap" /* style={{ marginTop: rem(-5), marginBottom: rem(5) }} */ >

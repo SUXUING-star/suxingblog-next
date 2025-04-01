@@ -28,7 +28,7 @@ const PostForm: React.FC<PostFormProps> = ({
 	initialData,
 	onSubmit,
 	onCancel,
-	availableTags = ['react', 'typescript', 'mantine', 'blog', 'nextjs']
+	availableTags = ['讨论', '交流', '教程', '分享', '新闻', '公告', '其他'], // 默认标签
 }) => {
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const isEditing = !!initialData;
@@ -39,7 +39,6 @@ const PostForm: React.FC<PostFormProps> = ({
 			slug: '',
 			content: '',
 			tags: [],
-			// excerpt: '', // <-- 移除
 			isPublished: false,
 		},
 		validate: {
@@ -59,10 +58,8 @@ const PostForm: React.FC<PostFormProps> = ({
 			slug: initialData?.slug || '',
 			content: initialData?.content || '',
 			tags: initialData?.tags?.filter(tag => availableTags.includes(tag)) || [],
-			// excerpt: initialData?.excerpt || '', // <-- 移除
 			isPublished: initialData?.isPublished || false,
 		});
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [initialData]);
 
 	// 自动生成 Slug 的逻辑不变
@@ -79,14 +76,14 @@ const PostForm: React.FC<PostFormProps> = ({
 	const handleSubmit = async (values: PostFormData) => {
 		setIsSubmitting(true);
 		try {
-            // 确保只传递 PostFormData 定义的字段
-            const dataToSend: PostFormData = {
-                title: values.title,
-                slug: values.slug,
-                content: values.content,
-                tags: values.tags,
-                isPublished: values.isPublished
-            };
+			// 确保只传递 PostFormData 定义的字段
+			const dataToSend: PostFormData = {
+				title: values.title,
+				slug: values.slug,
+				content: values.content,
+				tags: values.tags,
+				isPublished: values.isPublished
+			};
 			await onSubmit(dataToSend);
 			if (!isEditing) {
 				form.reset();
@@ -102,21 +99,18 @@ const PostForm: React.FC<PostFormProps> = ({
 	return (
 		<Box component="form" onSubmit={form.onSubmit(handleSubmit)} p="lg" /* bg="gray.0" */ > {/* 可以去掉背景色让它更融入 Modal */}
 			<Stack gap="md">
-				<TextInput label="标题" required {...form.getInputProps('title')} disabled={isSubmitting} placeholder="给你的帖子起个名字"/>
-				<TextInput label="标识 (Slug)" required description="用于生成访问链接 (小写字母、数字、连字符)" {...form.getInputProps('slug')} disabled={isSubmitting} placeholder="例如: my-first-post"/>
+				<TextInput label="标题" required {...form.getInputProps('title')} disabled={isSubmitting} placeholder="给你的帖子起个名字" />
+				<TextInput label="标识 (Slug)" required description="用于生成访问链接 (小写字母、数字、连字符)" {...form.getInputProps('slug')} disabled={isSubmitting} placeholder="例如: my-first-post" />
 				<Textarea
-                    label="内容"
-                    required
-                    autosize // 自动调整高度
-                    minRows={10} // <-- 增加最小行数，更沉浸
-                    maxRows={25} // <-- （可选）限制最大行数
-                    placeholder="在这里尽情书写你的想法..."
-                    {...form.getInputProps('content')}
-                    disabled={isSubmitting}
-                />
-				{/* --- 移除 Excerpt Textarea --- */}
-				{/* <Textarea label="概要" autosize minRows={2} maxLength={300} {...form.getInputProps('excerpt')} disabled={isSubmitting}/> */}
-				{/* --- 结束移除 --- */}
+					label="内容"
+					required
+					autosize // 自动调整高度
+					minRows={10} // <-- 增加最小行数，更沉浸
+					maxRows={25} // <-- （可选）限制最大行数
+					placeholder="在这里尽情书写你的想法..."
+					{...form.getInputProps('content')}
+					disabled={isSubmitting}
+				/>
 
 				<MultiSelect
 					label="标签"
@@ -135,7 +129,7 @@ const PostForm: React.FC<PostFormProps> = ({
 					disabled={isSubmitting}
 				/>
 				<Group justify="flex-end" mt="md">
-                    {/* 如果提供了 onCancel 回调，则显示取消按钮 */}
+					{/* 如果提供了 onCancel 回调，则显示取消按钮 */}
 					{onCancel && (
 						<Button variant="default" onClick={onCancel} disabled={isSubmitting}>
 							取消
