@@ -7,8 +7,6 @@ import PostDetailPage from './pages/PostDetailPage';
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
 import NotFoundPage from './pages/NotFoundPage';
-import SignalPage from './pages/SignalPage'; // <-- 导入测试页面
-
 function App() {
   return (
     <BrowserRouter>
@@ -17,7 +15,6 @@ function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<HomePage />} />
           <Route path="posts/:slug" element={<PostDetailPage />} />
-+         <Route path="web" element={<SignalPage />} /> {/* <-- 添加路由 */}
           {/* 其他需要 Layout 的页面放这里 */}
         </Route>
 
