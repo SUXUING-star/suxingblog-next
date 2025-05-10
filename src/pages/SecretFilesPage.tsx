@@ -15,18 +15,20 @@ import {
     Paper,
     Divider,
     Tooltip,
-    Center, // 用于居中加载和空状态
+    Center,
 } from '@mantine/core';
 import { IconUpload, IconDownload, IconTrash, IconAlertCircle, IconLock, IconRefresh, IconLogout, IconFile } from '@tabler/icons-react';
 
-// 从 Vite 环境变量获取 API 基础 URL
-const API_FILE_BASE_URL = `${import.meta.env.VITE_API_BASE_URL}/file`; // 确保 VITE_API_BASE_URL 后面没有 /file
+const API_FILE_BASE_URL = `${import.meta.env.VITE_API_BASE_URL}/file`;
 
 interface FileInfo {
-    name: string;
-    path: string; // 通常是 name，因为它们在 temp_uploads 下
-    size: number;
+    name: string; // 完整的时间戳文件名 (e.g., 1678886400000_sanitizedName.jpg), 作为 fileId
+    path: string; // 完整的 GitHub 路径
     sha: string;
+    size: number;
+    type: 'file';
+    timestamp: number;
+    displayFilename: string; // 从时间戳文件名中解析出的更友好的原始文件名部分
 }
 
 const SecretFilesPage: React.FC = () => {
@@ -46,30 +48,27 @@ const SecretFilesPage: React.FC = () => {
     const handleOperationAuth = async (e?: FormEvent) => {
         if (e) e.preventDefault();
         const pwd = passwordInputRef.current?.value;
-
         if (!pwd) {
             setAuthError('密码不能为空。');
             return;
         }
         setAuthError(null);
         setOperationPassword(pwd);
-        // useEffect 会在 operationPassword 更新后调用 fetchFiles
     };
 
     useEffect(() => {
-        if (operationPassword && !isOperationAuthenticated) { // 只有在密码被设置且之前未认证时才自动获取
-            setIsOperationAuthenticated(true);
+        if (operationPassword && !isOperationAuthenticated) {
+            setIsOperationAuthenticated(true); // 乐观设置UI，如果fetchFiles失败会被改回来
             fetchFiles(operationPassword);
         }
-    }, [operationPassword]);
-
+    }, [operationPassword, isOperationAuthenticated]); // 添加 isOperationAuthenticated 以避免重复获取
 
     const handleLogout = () => {
         setOperationPassword(null);
         setIsOperationAuthenticated(false);
         setFiles([]);
         setAuthError(null);
-        if (passwordInputRef.current) passwordInputRef.current.value = ''; // 清空密码框
+        if (passwordInputRef.current) passwordInputRef.current.value = '';
     };
 
     const makeApiRequest = async <T,>(
@@ -81,34 +80,19 @@ const SecretFilesPage: React.FC = () => {
             setIsOperationAuthenticated(false);
             throw new Error('操作密码未设置，请重新认证。');
         }
-
-        const headers: HeadersInit = {
-            'X-Operation-Password': operationPassword,
-        };
-        // FormData 会自动设置 Content-Type，所以不需要显式设置
-        // 对于其他请求，如果 body 不是 FormData 且有内容，可以默认 'application/json'
-        // 但我们的上传是 FormData，下载是 GET，列表是 GET，删除是 DELETE 无 body
-
+        const headers: HeadersInit = { 'X-Operation-Password': operationPassword };
         const response = await fetch(`${API_FILE_BASE_URL}${endpoint}`, {
-            method,
-            headers,
-            body: body instanceof FormData ? body : undefined, // DELETE 请求不应该有 body
+            method, headers, body: body instanceof FormData ? body : undefined,
         });
-
         if (response.status === 401) {
-            setIsOperationAuthenticated(false);
-            setOperationPassword(null); // 清除无效密码
+            setIsOperationAuthenticated(false); setOperationPassword(null);
             throw new Error('认证失败，请检查操作密码是否正确。');
         }
-
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ message: `HTTP 错误！状态码: ${response.status}` }));
             throw new Error(errorData.message || `API 请求失败: ${response.status}`);
         }
-
-        if (endpoint.startsWith('/download/')) {
-            return response.blob() as Promise<T>;
-        }
+        if (endpoint.startsWith('/download/')) { return response.blob() as Promise<T>; }
         return response.json() as Promise<T>;
     };
 
@@ -119,27 +103,19 @@ const SecretFilesPage: React.FC = () => {
             setIsOperationAuthenticated(false);
             return;
         }
-
-        setLoadingFiles(true);
-        setListError(null);
+        setLoadingFiles(true); setListError(null);
         try {
             const data = await makeApiRequest<{ success: boolean; files?: FileInfo[]; message: string }>(
                 '/list', 'GET'
             );
             if (data.success) {
                 setFiles(data.files || []);
-            } else {
-                throw new Error(data.message || "获取文件列表失败");
-            }
+            } else { throw new Error(data.message || "获取文件列表失败"); }
         } catch (err: any) {
             setListError(err.message);
-            if (err.message.toLowerCase().includes("认证失败")) {
-                setIsOperationAuthenticated(false);
-            }
+            if (err.message.toLowerCase().includes("认证失败")) { setIsOperationAuthenticated(false); }
             setFiles([]);
-        } finally {
-            setLoadingFiles(false);
-        }
+        } finally { setLoadingFiles(false); }
     };
 
     const handleFileChange = (selectedFile: File | null) => {
@@ -148,71 +124,53 @@ const SecretFilesPage: React.FC = () => {
     };
 
     const handleUpload = async () => {
-        if (!fileToUpload) {
-            setUploadMessage({ type: 'error', text: '请先选择一个文件。' });
-            return;
-        }
-        setUploading(true);
-        setUploadMessage(null);
-        const formData = new FormData();
-        formData.append('file', fileToUpload);
-
+        if (!fileToUpload) { setUploadMessage({ type: 'error', text: '请先选择一个文件。' }); return; }
+        setUploading(true); setUploadMessage(null);
+        const formData = new FormData(); formData.append('file', fileToUpload);
         try {
-            const data = await makeApiRequest<{ success: boolean; fileId?: string; downloadUrl?: string; message: string }>(
+            const data = await makeApiRequest<{ success: boolean; fileId?: string; downloadUrl?: string; originalFilename?: string; message: string }>(
                 '/upload', 'POST', formData
             );
             if (data.success) {
-                setUploadMessage({ type: 'success', text: `文件 "${fileToUpload.name}" 上传成功！ID: ${data.fileId}` });
-                setFileToUpload(null); // 清空已选择的文件
-                if (passwordInputRef.current) passwordInputRef.current.value = ''; // 清空文件输入框视觉残留
-                fetchFiles(); // 重新加载文件列表
-            } else {
-                throw new Error(data.message || "上传失败");
-            }
+                setUploadMessage({ type: 'success', text: `文件 "${data.originalFilename || fileToUpload.name}" 上传成功！ID: ${data.fileId}` });
+                setFileToUpload(null); // 清空 Mantine FileInput 的值
+                fetchFiles();
+            } else { throw new Error(data.message || "上传失败"); }
         } catch (err: any) {
             setUploadMessage({ type: 'error', text: `上传错误: ${err.message}` });
-        } finally {
-            setUploading(false);
-        }
+        } finally { setUploading(false); }
     };
 
-    const handleDownload = async (fileId: string, filename: string) => {
+    const handleDownload = async (fileIdToDownload: string, filenameToSaveAs: string) => {
+        // fileIdToDownload 应该是后端返回的 item.name (完整的时间戳文件名)
+        // filenameToSaveAs 应该是 item.displayFilename (更友好的原始文件名部分)
         try {
-            const blob = await makeApiRequest<Blob>(`/download/${fileId}`, 'GET');
+            const blob = await makeApiRequest<Blob>(`/download/${fileIdToDownload}`, 'GET');
             const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
+            const a = document.createElement('a'); a.style.display = 'none'; a.href = url;
+            a.download = filenameToSaveAs;
+            document.body.appendChild(a); a.click();
+            window.URL.revokeObjectURL(url); document.body.removeChild(a);
         } catch (err: any) {
             console.error('下载错误:', err);
-            alert(`下载文件 "${filename}" 失败: ${err.message}`);
+            alert(`下载文件 "${filenameToSaveAs}" 失败: ${err.message}`);
         }
     };
 
-    const handleDelete = async (fileId: string, filename: string) => {
-        if (!window.confirm(`确定要删除文件 "${filename}" 吗？此操作不可恢复。`)) {
-            return;
-        }
+    const handleDelete = async (fileIdToDelete: string, filenameForConfirm: string) => {
+        // fileIdToDelete 应该是后端返回的 item.name (完整的时间戳文件名)
+        // filenameForConfirm 应该是 item.displayFilename (更友好的原始文件名部分)
+        if (!window.confirm(`确定要删除文件 "${filenameForConfirm}" 吗？此操作不可恢复。`)) { return; }
         try {
             const data = await makeApiRequest<{ success: boolean; message: string }>(
-                `/delete/${fileId}`, 'DELETE'
+                `/delete/${fileIdToDelete}`, 'DELETE'
             );
             if (data.success) {
-                alert(data.message || `文件 "${filename}" 已成功删除。`);
+                alert(data.message || `文件 "${filenameForConfirm}" 已成功删除。`);
                 fetchFiles();
-            } else {
-                throw new Error(data.message || "删除失败");
-            }
-        } catch (err: any) {
-            alert(`删除文件 "${filename}" 失败: ${err.message}`);
-        }
+            } else { throw new Error(data.message || "删除失败"); }
+        } catch (err: any) { alert(`删除文件 "${filenameForConfirm}" 失败: ${err.message}`); }
     };
-
 
     if (!isOperationAuthenticated) {
         return (
@@ -312,34 +270,48 @@ const SecretFilesPage: React.FC = () => {
             )}
             {!loadingFiles && !listError && files.length > 0 && (
                 <Paper withBorder radius="md" shadow="xs" mt="md">
-                    <Table striped highlightOnHover withTableBorder verticalSpacing="md">
+                    <Table striped highlightOnHover withTableBorder verticalSpacing="md" >
                         <Table.Thead>
                             <Table.Tr>
-                                <Table.Th>文件名</Table.Th>
+                                <Table.Th>文件名 (点击可复制完整ID)</Table.Th>
                                 <Table.Th style={{ textAlign: 'right', width: '120px' }}>大小</Table.Th>
-                                <Table.Th style={{ textAlign: 'center', width: '120px' }}>操作</Table.Th>
+                                <Table.Th style={{ textAlign: 'center', width: '130px' }}>操作</Table.Th>
                             </Table.Tr>
                         </Table.Thead>
                         <Table.Tbody>
                             {files.map((f) => (
-                                <Table.Tr key={f.path}>
-                                    <Table.Td style={{ wordBreak: 'break-all', maxWidth: 'calc(100vw - 300px)' }}>
-                                        <Tooltip label={f.name} openDelay={500} withArrow>
-                                            <Text truncate="end">{f.name}</Text>
+                                <Table.Tr key={f.sha || f.name}> {/* 仍然建议用 f.name (即fileId) 或 f.path 作为key */}
+                                    <Table.Td style={{ wordBreak: 'break-all', maxWidth: 'calc(100vw - 320px)' }}> {/* 调整了maxWidth */}
+                                        <Tooltip label={`完整ID: ${f.name} (点击复制)`} openDelay={500} withArrow multiline >
+                                            <Text
+                                                truncate="end"
+                                                onClick={() => navigator.clipboard.writeText(f.name).then(() => alert('完整文件名已复制到剪贴板!')).catch(err => console.error('复制失败', err))}
+                                                style={{ cursor: 'pointer' }}
+                                            >
+                                                {f.displayFilename} {/* 显示解析后的友好文件名 */}
+                                            </Text>
                                         </Tooltip>
                                     </Table.Td>
-                                    <Table.Td style={{ textAlign: 'right' }}>
-                                        {(f.size / 1024).toFixed(2)} KB
-                                    </Table.Td>
+                                    <Table.Td style={{ textAlign: 'right' }}>{(f.size / 1024).toFixed(2)} KB</Table.Td>
                                     <Table.Td>
                                         <Group justify="center" gap="sm" wrap="nowrap">
                                             <Tooltip label="下载文件">
-                                                <ActionIcon variant="light" color="blue" onClick={() => handleDownload(f.name, f.name)} size="lg">
+                                                <ActionIcon
+                                                    variant="light"
+                                                    color="blue"
+                                                    onClick={() => handleDownload(f.name, f.displayFilename)}  // 下载时用 f.name (fileId), 保存时用 f.displayFilename
+                                                    size="lg"
+                                                >
                                                     <IconDownload stroke={1.5} />
                                                 </ActionIcon>
                                             </Tooltip>
                                             <Tooltip label="删除文件">
-                                                <ActionIcon variant="light" color="red" onClick={() => handleDelete(f.name, f.name)} size="lg">
+                                                <ActionIcon
+                                                    variant="light"
+                                                    color="red"
+                                                    onClick={() => handleDelete(f.name, f.displayFilename)} // 删除时用 f.name (fileId), 确认时用 f.displayFilename
+                                                    size="lg"
+                                                >
                                                     <IconTrash stroke={1.5} />
                                                 </ActionIcon>
                                             </Tooltip>
