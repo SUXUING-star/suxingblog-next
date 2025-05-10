@@ -1,27 +1,35 @@
 // src/stores/webrtcStore.ts
 import { create } from 'zustand';
-import { immer } from 'zustand/middleware/immer'; // 可选，用于更方便地进行不可变更新
+import { immer } from 'zustand/middleware/immer';
 
 // --- 常量定义 ---
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const FILE_CHUNK_SIZE = 16 * 1024; // 16KB
+const POLLING_INTERVAL = 3000; // HTTP 轮询间隔（毫秒），例如3秒
 
 // --- 接口定义 ---
-// 从服务器接收的信令消息
-export interface SignalingMessageFromServer {
-    type: 'connected' | 'room_joined' | 'peer_joined' | 'peer_left' | 'offer' | 'answer' | 'candidate' | 'error';
-    payload: any; // 具体类型取决于 type
-    senderId?: string; // 发送方ID (除了 'connected' 和 'error' 类型)
+
+// 通过 HTTP API 发送和接收的信令消息结构
+export interface ApiSignal {
+    type: 'offer' | 'answer' | 'candidate' | 'peer_joined' | 'peer_left' | 'error' | 'room_state' | 'connected_ack';
+    payload: any; // 具体内容取决于 type
+    senderId?: string; // 原始发送者 clientId
+    targetPeerId?: string; // 对于 offer, answer, candidate, 需要指定目标 clientId
+    messageId: string; // 由服务器生成的唯一消息ID
+    timestamp: number; // 由服务器生成的时间戳
+    roomId?: string; // 消息所属的房间 (主要由API端点路径决定，但包含在内可能有用)
 }
 
-// 发送给服务器的信令消息
-export interface SignalingMessageToServer {
+// 前端发送给 API 的信令请求体结构 (不包含 messageId 和 timestamp)
+export interface ApiSignalRequest {
     type: 'offer' | 'answer' | 'candidate';
-    payload: any; // 具体类型取决于 type (例如 RTCSessionDescriptionInit for offer/answer, RTCIceCandidateInit for candidate)
-    targetPeerId?: string; // 目标 Peer ID
+    payload: any;
+    senderId: string; // 当前客户端的 ID
+    targetPeerId: string; // 目标客户端的 ID
+    roomId: string; // 当前房间的 ID
 }
 
-// 文件元数据
+// 文件元数据接口
 export interface FileMetadata {
     name: string;
     size: number;
@@ -30,126 +38,90 @@ export interface FileMetadata {
     fileId?: string; // 唯一文件标识符
 }
 
-// 日志条目
+// 日志条目接口
 let logIdCounter = 0; // 用于生成唯一的日志ID
 export interface LogEntry {
     id: number;
     time: string;
-    type: '日志' | '错误' | '接收' | '发送' | 'WebRTC' | '信令';
+    type: '日志' | '警告' | '错误' | '接收' | '发送' | 'WebRTC' | '信令' | 'API'; // 增加 API 类型
     message: string;
 }
 
 // Store 的 State 类型
 export interface WebRTCState {
-    // 日志系统
     logs: LogEntry[];
     maxLogs: number;
-
-    // 信令连接状态
-    isSignalConnecting: boolean;
-    isSignalConnected: boolean;
+    apiBaseUrl: string; // Next.js API 的基础 URL (例如 "/api/signal")
+    isSignalSetup: boolean;
+    isConnectingOrJoining: boolean;
+    isPolling: boolean;
+    pollingIntervalId: number | null;
     myClientId: string | null;
-    currentSignalRoomId: string | null;
+    currentRoomId: string | null;
     peersInSignalRoom: string[];
-    workerBaseUrl: string; // 从环境变量读取，初始化时传入
-
-    // P2P 连接状态
+    lastSignalTimestampProcessed: number | null;
     isP2PConnected: boolean;
-    targetPeerIdForP2P: string | null; // 当前选定的P2P通信目标
-
-    // 文件传输 - 发送方
+    targetPeerIdForP2P: string | null;
     selectedFile: File | null;
-    fileSendProgress: number; // 0-100
+    fileSendProgress: number;
     isFileSending: boolean;
-
-    // 文件传输 - 接收方
     receivingFileMetadata: FileMetadata | null;
-    receivedFileChunks: ArrayBuffer[]; // 注意：大文件时内存占用
-    fileReceiveProgress: number; // 0-100
+    receivedFileChunks: ArrayBuffer[];
+    fileReceiveProgress: number;
     lastReceivedFileData: { blob: Blob; metadata: FileMetadata } | null;
     receivedFileDownloadUrl: string | null;
-
-    // 引用 (这些不会直接存在 Zustand state 中，而是通过闭包或 ref 存储在 actions 中或组件中)
-    // socketRef: WebSocket | null; // 不直接存 WebSocket 实例，通过 actions 管理
-    // peerConnectionRef: RTCPeerConnection | null;
-    // dataChannelRef: RTCDataChannel | null;
-
-    // 通知 (简单起见，通知的显示状态和消息可以暂时还由组件的 useDisclosure 管理，store只负责触发)
-    // 但也可以把通知消息放到 store 中
     notification: { type: 'success' | 'error' | 'info'; title: string; message: string; id: number } | null;
 }
 
 // Store 的 Actions 类型
 export interface WebRTCActions {
-    // 日志操作
     addLog: (message: string, type?: LogEntry['type']) => void;
     clearLogs: () => void;
-
-    // 初始化环境变量
-    setWorkerBaseUrl: (url: string) => void;
-
-    // 信令连接操作
-    connectToSignaling: (roomId: string) => Promise<void>; // 改为返回 Promise，方便组件知道连接状态
-    disconnectFromSignaling: (reason?: string) => void;
-    _handleSignalingOpen: (socket: WebSocket, roomId: string) => void;
-    _handleSignalingMessage: (event: MessageEvent, socket: WebSocket) => void;
-    _handleSignalingClose: (event: CloseEvent, socket: WebSocket, initiatingDisconnect: boolean) => void;
-    _handleSignalingError: (event: Event, socket: WebSocket) => void;
-    sendSignalingMessage: (type: SignalingMessageToServer['type'], payload: any, targetPeerId?: string) => boolean;
-
-    // P2P 操作
+    setApiBaseUrl: (url: string) => void;
+    joinRoomAndSetupSignaling: (roomId: string, desiredClientId?: string) => Promise<boolean>;
+    leaveRoom: () => Promise<void>;
+    sendApiSignal: (signalRequest: ApiSignalRequest) => Promise<boolean>;
+    _fetchSignals: () => Promise<void>;
+    startPollingSignals: () => void;
+    stopPollingSignals: () => void;
+    _handleReceivedApiSignal: (signal: ApiSignal) => void;
     setTargetPeerIdForP2P: (peerId: string | null) => void;
-    initiateP2PCall: (targetPeerId: string) => Promise<void>; // 改为返回 Promise
+    initiateP2PCall: (targetPeerId: string) => Promise<void>;
     closeP2PConnection: (reason?: string) => void;
-    _handleOffer: (offerSdp: RTCSessionDescriptionInit, senderId: string, pc: RTCPeerConnection) => Promise<void>;
-    _handleAnswer: (answerSdp: RTCSessionDescriptionInit, senderId: string, pc: RTCPeerConnection) => Promise<void>;
-    _handleCandidate: (candidateInit: RTCIceCandidateInit, senderId: string, pc: RTCPeerConnection) => Promise<void>;
+    _createPeerConnection: (targetPeerId: string) => RTCPeerConnection | null;
+    _createDataChannel: (pc: RTCPeerConnection, label?: string) => RTCDataChannel | null;
     _setupDataChannelEvents: (channel: RTCDataChannel) => void;
-    _createPeerConnection: (targetPeerId: string) => RTCPeerConnection | null; // 内部辅助
-    _createDataChannel: (pc: RTCPeerConnection, label?: string) => RTCDataChannel | null; // 内部辅助
-
-    // 文件操作
+    _handleOfferViaApi: (offerSdp: RTCSessionDescriptionInit, senderId: string, pc: RTCPeerConnection) => Promise<void>;
+    _handleAnswerViaApi: (answerSdp: RTCSessionDescriptionInit, senderId: string, pc: RTCPeerConnection) => Promise<void>;
+    _handleCandidateViaApi: (candidateInit: RTCIceCandidateInit, senderId: string, pc: RTCPeerConnection) => Promise<void>;
     setSelectedFile: (file: File | null) => void;
-    sendFile: () => Promise<boolean>; // 发送当前 selectedFile
-    _revokeReceivedFileDownloadUrl: () => void; // 清理旧的 Object URL
-
-    // 通知操作
+    sendFile: () => Promise<boolean>;
+    _revokeReceivedFileDownloadUrl: () => void;
     showNotification: (title: string, message: string, type?: 'success' | 'error' | 'info') => void;
     clearNotification: () => void;
-
-    // 内部状态设置 (直接暴露部分 setter 可能不是最佳实践，但为了简化迁移，暂时保留)
-    _setIsSignalConnecting: (connecting: boolean) => void;
-    _setIsSignalConnected: (connected: boolean) => void;
-    _setMyClientId: (id: string | null) => void;
-    _setCurrentSignalRoomId: (id: string | null) => void;
-    _setPeersInSignalRoom: (peers: string[]) => void;
     _setIsP2PConnected: (connected: boolean) => void;
     _setFileSendProgress: (progress: number) => void;
     _setIsFileSending: (sending: boolean) => void;
+    cleanupStore: () => void;
 }
 
-// Zustand Store (使用 immer 中间件来简化状态更新)
-// 注意：WebSocket, RTCPeerConnection, RTCDataChannel 实例不应该直接存储在 Zustand state 中，
-// 因为它们不是可序列化的，并且可能包含复杂的内部状态和方法。
-// 我们将通过闭包在 action 内部管理这些实例的引用。
-
-let socketInstance: WebSocket | null = null;
 let peerConnectionInstance: RTCPeerConnection | null = null;
 let dataChannelInstance: RTCDataChannel | null = null;
-let activeInitiatingDisconnect = false; // 标志位，防止 onclose 时的意外处理
-
 
 export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
     immer((set, get) => ({
-        // 初始状态
+        // --- 初始状态 ---
         logs: [],
         maxLogs: 300,
-        isSignalConnecting: false,
-        isSignalConnected: false,
+        apiBaseUrl: '',
+        isSignalSetup: false,
+        isConnectingOrJoining: false,
+        isPolling: false,
+        pollingIntervalId: null,
         myClientId: null,
-        currentSignalRoomId: null,
+        currentRoomId: null,
         peersInSignalRoom: [],
-        workerBaseUrl: '', // 需要在应用启动时设置
+        lastSignalTimestampProcessed: null,
         isP2PConnected: false,
         targetPeerIdForP2P: null,
         selectedFile: null,
@@ -162,338 +134,429 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
         receivedFileDownloadUrl: null,
         notification: null,
 
-        // --- Actions ---
-
-        setWorkerBaseUrl: (url) => set({ workerBaseUrl: url }),
-
+        // --- Actions 实现 ---
         addLog: (message, type = '日志') => {
             const newLog: LogEntry = { id: logIdCounter++, time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), type, message };
             console.log(`[Store Log - ${type}] ${message}`);
             set((state) => {
                 state.logs = [newLog, ...state.logs.slice(0, state.maxLogs - 1)];
-                if (type === '错误' && !state.notification) { // 简单错误通知触发
-                    state.notification = { type: 'error', title: '发生错误', message, id: Date.now() };
+                if (type === '错误' && (!state.notification || state.notification.type !== 'error')) { // 避免覆盖已有的错误通知
+                    state.notification = { type: 'error', title: '错误', message, id: Date.now() };
                 }
             });
         },
         clearLogs: () => set({ logs: [] }),
+
+         // --- Actions 实现 ---
+        setApiBaseUrl: (url) => {
+            // 确保传入的 URL 是有效的，并且没有多余的末尾斜杠 (可选优化)
+            const cleanedUrl = url.replace(/\/$/, '');
+            console.log(`[Store] API Base URL set to: ${cleanedUrl}`);
+            set({ apiBaseUrl: cleanedUrl });
+        },
+
 
         showNotification: (title, message, type = 'info') => {
             set({ notification: { type, title, message, id: Date.now() } });
         },
         clearNotification: () => set({ notification: null }),
 
-        // 内部状态 Setter (简化)
-        _setIsSignalConnecting: (connecting) => set({ isSignalConnecting: connecting }),
-        _setIsSignalConnected: (connected) => set({ isSignalConnected: connected }),
-        _setMyClientId: (id) => set({ myClientId: id }),
-        _setCurrentSignalRoomId: (id) => set({ currentSignalRoomId: id }),
-        _setPeersInSignalRoom: (peers) => set({ peersInSignalRoom: peers }),
-        _setIsP2PConnected: (connected) => set({ isP2PConnected: connected }),
-        _setFileSendProgress: (progress) => set({ fileSendProgress: progress }),
-        _setIsFileSending: (sending) => set({ isFileSending: sending }),
+        joinRoomAndSetupSignaling: async (roomId, desiredClientId) => {
+            const { apiBaseUrl, addLog, showNotification, startPollingSignals, myClientId: currentMyClientId, currentRoomId: currentRoomIdInState, isSignalSetup: currentIsSignalSetup, isConnectingOrJoining: currentIsConnecting } = get();
 
-
-        connectToSignaling: async (roomId) => {
-            const { isSignalConnecting, isSignalConnected, workerBaseUrl, addLog, showNotification, _handleSignalingOpen, _handleSignalingMessage, _handleSignalingClose, _handleSignalingError } = get();
-            if (isSignalConnecting || isSignalConnected) {
-                addLog(isSignalConnecting ? '正在连接信令服务器...' : '已连接到信令服务器，无需重复。', '日志');
-                if (isSignalConnected) showNotification('提示', '已连接，无需重复操作。', 'info');
-                return;
-            }
-            if (!roomId.trim()) { addLog('请输入房间ID。', '错误'); return; }
-            if (!workerBaseUrl) { addLog('信令服务器URL未配置。', '错误'); return; }
-
-            const wsPath = `/room/${encodeURIComponent(roomId.trim())}`;
-            let wsUrl;
-            try {
-                const parsedWorkerUrl = new URL(workerBaseUrl);
-                const protocol = parsedWorkerUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-                wsUrl = `${protocol}//${parsedWorkerUrl.host}${parsedWorkerUrl.pathname.replace(/\/$/, '')}${wsPath}`;
-            } catch (e) {
-                addLog(`环境变量 VITE_WORKER_SIGNALING_URL ("${workerBaseUrl}") 无效。`, '错误'); return;
-            }
-
-            addLog(`尝试连接到信令服务器: ${wsUrl}`, '信令');
-            set({ isSignalConnecting: true, notification: null }); // 清除旧通知
-            activeInitiatingDisconnect = false; // 重置标志位
-
-            try {
-                const newSocket = new WebSocket(wsUrl);
-                socketInstance = newSocket; // 在闭包中存储实例
-
-                newSocket.onopen = () => _handleSignalingOpen(newSocket, roomId);
-                newSocket.onmessage = (event) => _handleSignalingMessage(event, newSocket);
-                newSocket.onclose = (event) => _handleSignalingClose(event, newSocket, activeInitiatingDisconnect);
-                newSocket.onerror = (event) => _handleSignalingError(event, newSocket);
-
-            } catch (error) {
-                addLog(`创建 WebSocket 连接失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
-                set({ isSignalConnecting: false });
-                socketInstance = null;
-            }
-        },
-
-        _handleSignalingOpen: (socket, roomId) => {
-            if (socketInstance !== socket) return; // 过时的socket
-            get().addLog('信令服务器连接成功。', '信令');
-            set({ isSignalConnected: true, isSignalConnecting: false, currentSignalRoomId: roomId });
-            get().showNotification('连接成功', `已连接到房间: ${roomId}`, 'success');
-        },
-
-        _handleSignalingMessage: (event, socket) => {
-            if (socketInstance !== socket) return;
-            const { addLog, myClientId, targetPeerIdForP2P, _handleOffer, _handleAnswer, _handleCandidate, closeP2PConnection } = get();
-            try {
-                const message = JSON.parse(event.data as string) as SignalingMessageFromServer;
-                addLog(`收到信令 (${message.type}) <- ${message.senderId || '服务器'}: ${JSON.stringify(message.payload).substring(0, 100)}...`, '接收');
-                switch (message.type) {
-                    case 'connected':
-                        set({ myClientId: message.payload.clientId, currentSignalRoomId: message.payload.roomId });
-                        const peers = (message.payload.peersInRoom || []).filter((p: string) => p !== message.payload.clientId);
-                        set({ peersInSignalRoom: peers });
-                        addLog(`信令已连接！我的ID: ${message.payload.clientId}。房间: ${message.payload.roomId}。Peers: ${peers.join(', ') || '无'}`, '信令');
-                        break;
-                    case 'peer_joined':
-                        if (message.payload.peerId !== myClientId) {
-                            addLog(`Peer ${message.payload.peerId} 加入了房间。`, '信令');
-                            set(state => ({ peersInSignalRoom: state.peersInSignalRoom.includes(message.payload.peerId) ? state.peersInSignalRoom : [...state.peersInSignalRoom, message.payload.peerId] }));
-                        }
-                        break;
-                    case 'peer_left':
-                        addLog(`Peer ${message.payload.peerId} 离开了房间。`, '信令');
-                        set(state => ({
-                            peersInSignalRoom: state.peersInSignalRoom.filter(
-                                (p: string) => p !== message.payload.peerId // 明确指定 p 的类型为 string
-                            )
-                        }));
-                        if (targetPeerIdForP2P === message.payload.peerId) {
-                            set({ targetPeerIdForP2P: null });
-                            closeP2PConnection('对方离开房间');
-                            addLog(`与 Peer ${message.payload.peerId} 的 P2P 连接已关闭 (对方离开)。`, 'WebRTC');
-                        }
-                        break;
-                    case 'offer':
-                        if (message.senderId && message.payload && peerConnectionInstance) {
-                            _handleOffer(message.payload as RTCSessionDescriptionInit, message.senderId, peerConnectionInstance);
-                        } else if (message.senderId && message.payload) { // No PC yet, need to create one
-                            const newPc = get()._createPeerConnection(message.senderId);
-                            if (newPc) {
-                                _handleOffer(message.payload as RTCSessionDescriptionInit, message.senderId, newPc);
-                            }
-                        }
-                        break;
-                    case 'answer':
-                        if (message.senderId && message.payload && peerConnectionInstance) {
-                            _handleAnswer(message.payload as RTCSessionDescriptionInit, message.senderId, peerConnectionInstance);
-                        }
-                        break;
-                    case 'candidate':
-                        if (message.senderId && message.payload && message.payload.candidate && peerConnectionInstance) {
-                            // 确保 peerConnectionInstance 存在并且已经设置了 remoteDescription
-                            if (!peerConnectionInstance.remoteDescription) {
-                                addLog('[Store] 收到 Candidate 但远端描述尚未设置，将尝试稍后处理 (或丢弃，取决于实现)。');
-                                // 这里可以实现一个简单的 candidate 缓冲队列，等 remoteDescription 设置后再处理。
-                                // 为简单起见，暂时先打印警告。如果问题持续，需要实现缓冲。
-                            } else {
-                                _handleCandidate(message.payload.candidate as RTCIceCandidateInit, message.senderId, peerConnectionInstance);
-                            }
-                        } else if (!peerConnectionInstance && message.senderId && message.payload && message.payload.candidate) {
-                            addLog('[Store] 收到 Candidate 但 PeerConnection 未初始化。Candidate 被忽略。');
-                            // 如果此时还没有 peerConnectionInstance，这个 candidate 几乎肯定是无法处理的。
-                        }
-                        break;
-                    case 'error':
-                        addLog(`信令服务器错误: ${message.payload.message || JSON.stringify(message.payload)}`, '错误');
-                        break;
-                    default:
-                        addLog(`收到未知信令类型: ${(message as any).type}`, '信令');
-                }
-            } catch (error) {
-                addLog(`处理信令消息出错: ${event.data}. 详情: ${error instanceof Error ? error.message : String(error)}`, '错误');
-            }
-        },
-
-        _handleSignalingClose: (event, socket, initiatingDisconnect) => {
-            // 只处理当前活动的 socket 的关闭事件，除非是用户主动断开（initiatingDisconnect 为 true）
-            if (socketInstance !== socket && !initiatingDisconnect) {
-                get().addLog(`一个旧的/过时的信令 WebSocket 连接关闭 (代码: ${event.code})，已被忽略。`, '日志');
-                return;
-            }
-            if (initiatingDisconnect && socketInstance !== socket) { // 主动断开的是另一个socket，忽略
-                return;
-            }
-
-
-            const { addLog, showNotification, closeP2PConnection, isSignalConnected: wasConnected } = get();
-            const logMsg = `信令服务器连接断开。代码: ${event.code}, 原因: ${event.reason || '无'}`;
-            addLog(logMsg, event.wasClean ? '信令' : '错误');
-
-            // 只有在之前确实是连接状态，并且不是用户主动干净断开的情况下，才显示错误通知
-            if (wasConnected && !event.wasClean && !initiatingDisconnect) {
-                showNotification('信令断开', logMsg, 'error');
-            }
-
-
-            set({
-                isSignalConnected: false,
-                isSignalConnecting: false,
-                myClientId: null,
-                currentSignalRoomId: null,
-                peersInSignalRoom: []
-            });
-            closeP2PConnection('信令连接关闭');
-
-            if (socketInstance === socket) { // 清理当前的socketInstance
-                socketInstance = null;
-            }
-        },
-
-        _handleSignalingError: (event, socket) => {
-            if (socketInstance !== socket) return;
-            get().addLog('信令服务器 WebSocket 发生错误。 "onclose" 事件将随后触发。', '错误');
-            console.error('信令 WebSocket onerror 事件:', event);
-            // onclose 会处理状态清理
-        },
-
-        disconnectFromSignaling: (reason = '用户手动断开') => {
-            const { addLog, showNotification, closeP2PConnection } = get();
-            activeInitiatingDisconnect = true; // 设置标志位
-
-            if (socketInstance) {
-                addLog(`手动断开信令服务器连接 (${reason})...`, '信令');
-                const currentSocket = socketInstance;
-                socketInstance = null; // 防止 onclose 再次触发逻辑 (尤其是在react严格模式下)
-
-                currentSocket.onopen = null;
-                currentSocket.onmessage = null;
-                currentSocket.onerror = null;
-                // 不要完全移除 onclose，而是让它执行一个最小化的版本或检查 activeInitiatingDisconnect
-                currentSocket.onclose = (event: CloseEvent) => {
-                    console.log(`[Store Log] WebSocket for ${currentSocket.url} closed by manual disconnect (reason: ${event.reason}).`);
-                    // 不在这里调用 get()._handleSignalingClose() 以避免循环或重复逻辑
-                    // 状态已经在下面设置了
-                };
-
-                if (currentSocket.readyState === WebSocket.OPEN || currentSocket.readyState === WebSocket.CONNECTING) {
-                    currentSocket.close(1000, reason);
-                }
-            } else {
-                addLog('没有活动的信令连接可断开。', '日志');
-            }
-
-            // 立即更新状态，不依赖 onclose
-            set({
-                isSignalConnected: false,
-                isSignalConnecting: false, // 如果正在连接中，也取消
-                myClientId: null,
-                currentSignalRoomId: null,
-                peersInSignalRoom: []
-            });
-            closeP2PConnection(`信令手动断开: ${reason}`);
-            showNotification('已断开', `已成功断开与信令服务器的连接 (${reason})。`, 'info');
-        },
-
-        sendSignalingMessage: (type, payload, targetPeerId) => {
-            const { addLog } = get();
-            if (!socketInstance || socketInstance.readyState !== WebSocket.OPEN) {
-                addLog('信令服务器未连接，无法发送消息。', '错误');
+            if (currentIsConnecting) {
+                addLog('正在尝试加入房间，请稍候...', 'API');
                 return false;
             }
-            const message: SignalingMessageToServer = { type, payload };
-            if (targetPeerId) message.targetPeerId = targetPeerId;
-            const messageString = JSON.stringify(message);
-            try {
-                socketInstance.send(messageString);
-                addLog(`发送信令 (${type}) -> ${targetPeerId || '广播'}: ${messageString.substring(0, 100)}...`, '发送');
+            if (currentIsSignalSetup && currentRoomIdInState === roomId && currentMyClientId) {
+                addLog(`已在房间 ${roomId} 中 (ID: ${currentMyClientId})，无需重复加入。确保轮询已启动。`, 'API');
+                startPollingSignals(); // 确保轮询是活动的
                 return true;
-            } catch (error) {
-                addLog(`发送信令 (${type}) 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
+            }
+
+            set({ isConnectingOrJoining: true, currentRoomId: roomId, notification: null }); // 先设置 roomId，以便后续请求使用
+            addLog(`尝试加入房间: ${roomId}...`, 'API');
+
+            try {
+                  const response = await fetch(`${apiBaseUrl}/join`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ roomId }), 
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: `加入房间失败，HTTP状态码: ${response.status}` }));
+                    throw new Error(errorData.message || `加入房间失败，HTTP状态码: ${response.status}`);
+                }
+
+                const data = await response.json() as { clientId: string, roomId: string, peersInRoom: string[] };
+                set(state => {
+                    state.myClientId = data.clientId;
+                    state.currentRoomId = data.roomId;
+                    state.peersInSignalRoom = (data.peersInRoom || []).filter(p => p !== data.clientId); // 确保不包含自己
+                    state.isSignalSetup = true;
+                    state.isConnectingOrJoining = false;
+                    state.lastSignalTimestampProcessed = Date.now(); // 开始轮询的时间戳基准
+                });
+                addLog(`成功加入房间: ${data.roomId}，我的ID: ${data.clientId}。Peers: ${get().peersInSignalRoom.join(', ') || '无'}`, '信令');
+                showNotification('加入成功', `已加入房间 ${data.roomId}`, 'success');
+                startPollingSignals();
+                return true;
+            } catch (error: any) {
+                addLog(`加入房间 ${roomId} 失败: ${error.message}`, '错误');
+                set({ isSignalSetup: false, isConnectingOrJoining: false, currentRoomId: null, myClientId: null }); // 清理状态
+                showNotification('加入失败', `无法加入房间: ${error.message}`, 'error');
                 return false;
             }
         },
 
-        // --- P2P Actions ---
+        leaveRoom: async () => {
+            const { apiBaseUrl, addLog, stopPollingSignals, myClientId, currentRoomId, closeP2PConnection } = get();
+            if (!myClientId || !currentRoomId) {
+                addLog('未在任何房间中或未初始化，无需离开。', 'API');
+                return;
+            }
+
+            addLog(`尝试离开房间: ${currentRoomId}...`, 'API');
+            stopPollingSignals(); // 先停止轮询
+            if (get().isP2PConnected) {
+                closeP2PConnection('离开房间');
+            }
+
+            try {
+                // 即使请求失败，前端也应该清理状态
+                await fetch(`${apiBaseUrl}/leave`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ roomId: currentRoomId, clientId: myClientId }),
+                });
+                addLog(`已发送离开房间 ${currentRoomId} 的请求。`, 'API');
+            } catch (error: any) {
+                addLog(`发送离开房间请求失败: ${error.message}`, '错误');
+            } finally {
+                // 清理本地状态
+                set({
+                    isSignalSetup: false,
+                    myClientId: null,
+                    currentRoomId: null,
+                    peersInSignalRoom: [],
+                    targetPeerIdForP2P: null,
+                    isP2PConnected: false,
+                    lastSignalTimestampProcessed: null,
+                    // selectedFile 等文件状态可以不清，用户可能还想操作
+                });
+                peerConnectionInstance = null; // 清理 P2P 实例
+                dataChannelInstance = null;
+                addLog('已离开房间并清理本地状态。', '信令');
+            }
+        },
+
+        sendApiSignal: async (signalRequest) => {
+            const { apiBaseUrl, addLog, isSignalSetup, myClientId, currentRoomId } = get();
+            if (!isSignalSetup || !myClientId || !currentRoomId) {
+                addLog('信令未设置或未加入房间，无法发送信号。', '错误');
+                return false;
+            }
+            if (signalRequest.roomId !== currentRoomId || signalRequest.senderId !== myClientId) {
+                addLog('发送信号的房间或发送者ID与当前状态不匹配。', '错误');
+                return false;
+            }
+
+            addLog(`发送API信号 (${signalRequest.type}) -> ${signalRequest.targetPeerId}: ${JSON.stringify(signalRequest.payload).substring(0, 50)}...`, 'API');
+            try {
+                const response = await fetch(`${apiBaseUrl}/send`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(signalRequest),
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: '发送信号失败 (无法解析错误响应)' }));
+                    throw new Error(errorData.message || `发送信号失败，HTTP状态码: ${response.status}`);
+                }
+                addLog(`API信号 (${signalRequest.type}) 发送成功。`, 'API');
+                return true;
+            } catch (error: any) {
+                addLog(`发送API信号 (${signalRequest.type}) 失败: ${error.message}`, '错误');
+                return false;
+            }
+        },
+
+        _fetchSignals: async () => {
+            const { apiBaseUrl, currentRoomId, myClientId, lastSignalTimestampProcessed, _handleReceivedApiSignal, addLog, isSignalSetup, isPolling } = get();
+
+            if (!isSignalSetup || !currentRoomId || !myClientId || !isPolling) {
+                // console.log('[Store _fetchSignals] Conditions not met for polling, skipping.');
+                return;
+            }
+
+            // console.log(`[Store _fetchSignals] Polling for room ${currentRoomId} since ${lastSignalTimestampProcessed}`);
+            try {
+                const url = new URL(`${apiBaseUrl}/receive`); // 确保 apiBaseUrl 不以 / 结尾
+                url.searchParams.append('roomId', currentRoomId);
+                url.searchParams.append('clientId', myClientId); // 服务器可以用来过滤掉自己发送的消息（如果需要）
+                if (lastSignalTimestampProcessed) {
+                    url.searchParams.append('since', lastSignalTimestampProcessed.toString());
+                }
+
+                const response = await fetch(url.toString());
+
+                if (response.status === 204) { // No Content
+                    return;
+                }
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: '获取信号时服务器响应错误' }));
+                    throw new Error(errorData.message || `获取信号失败，HTTP状态码: ${response.status}`);
+                }
+
+                const signals = await response.json() as ApiSignal[];
+                if (signals && signals.length > 0) {
+                    addLog(`轮询：收到 ${signals.length} 条新API信号。`, 'API');
+                    let maxTimestamp = lastSignalTimestampProcessed || 0;
+                    signals.forEach(signal => {
+                        // 确保不处理自己作为 senderId 的 peer_joined/peer_left (除非是服务器发的 room_state)
+                        if ((signal.type === 'peer_joined' || signal.type === 'peer_left') && signal.senderId === myClientId) {
+                            // console.log(`[Store _fetchSignals] Ignoring self-originated peer event: ${signal.type} for ${signal.senderId}`);
+                        } else {
+                            _handleReceivedApiSignal(signal);
+                        }
+                        if (signal.timestamp > maxTimestamp) {
+                            maxTimestamp = signal.timestamp;
+                        }
+                    });
+                    // 只更新时间戳，如果它确实前进了
+                    if (maxTimestamp > (lastSignalTimestampProcessed || 0)) {
+                        set({ lastSignalTimestampProcessed: maxTimestamp });
+                    }
+                }
+            } catch (error: any) {
+                addLog(`轮询信号失败: ${error.message}`, '错误');
+                // 考虑是否在此处停止轮询，或增加错误计数器
+                // get().stopPollingSignals();
+                // get().showNotification('错误', '与信令服务器的通信可能中断。', 'error');
+            }
+        },
+
+        startPollingSignals: () => {
+            const { isPolling, pollingIntervalId, _fetchSignals, addLog, isSignalSetup } = get();
+            if (!isSignalSetup) {
+                addLog('信令未设置，无法启动轮询。', 'API');
+                return;
+            }
+            if (isPolling && pollingIntervalId) {
+                return; // 已在轮询
+            }
+            addLog('启动信号轮询...', 'API');
+            _fetchSignals(); // 立即执行一次
+            const newIntervalId = setInterval(() => {
+                if (get().isSignalSetup && get().isPolling) { // 再次检查状态，确保在 interval 触发时仍然需要轮询
+                    _fetchSignals();
+                } else {
+                    get().stopPollingSignals(); // 如果条件不满足，停止轮询
+                }
+            }, POLLING_INTERVAL) as unknown as number;
+            set({ isPolling: true, pollingIntervalId: newIntervalId });
+        },
+
+        stopPollingSignals: () => {
+            const { pollingIntervalId, addLog } = get();
+            if (pollingIntervalId) {
+                addLog('停止信号轮询。', 'API');
+                clearInterval(pollingIntervalId);
+                set({ isPolling: false, pollingIntervalId: null });
+            }
+        },
+
+        _handleReceivedApiSignal: (signal) => {
+            const { addLog, myClientId, peersInSignalRoom,
+                _handleOfferViaApi, _handleAnswerViaApi, _handleCandidateViaApi,
+                targetPeerIdForP2P, closeP2PConnection, showNotification, setTargetPeerIdForP2P } = get();
+
+            if (!myClientId) return;
+
+            // 避免处理自己发送的 offer/answer/candidate (这些是发给别人的)
+            if ((signal.type === 'offer' || signal.type === 'answer' || signal.type === 'candidate') && signal.senderId === myClientId) {
+                // console.log(`[Store _handleReceivedApiSignal] Ignoring self-sent signal: ${signal.type}`);
+                return;
+            }
+            // 避免处理自己发送的 peer_joined/left (这些是由服务器确认或广播的)
+            if ((signal.type === 'peer_joined' || signal.type === 'peer_left') && signal.payload.peerId === myClientId) {
+                // console.log(`[Store _handleReceivedApiSignal] Ignoring self peer event: ${signal.type}`);
+                return;
+            }
+
+
+            addLog(`处理API信号 (${signal.type}) 来自 ${signal.senderId || '服务器'}: ${JSON.stringify(signal.payload).substring(0, 50)}...`, '接收');
+
+            switch (signal.type) {
+                case 'connected_ack':
+                    // 这个状态通常在 joinRoomAndSetupSignaling 中处理过了
+                    // 但如果服务器单独推送这个，可以用来同步
+                    if (signal.payload.clientId === myClientId) {
+                        set(state => {
+                            state.currentRoomId = signal.payload.roomId;
+                            state.peersInSignalRoom = (signal.payload.peersInRoom || []).filter((p: string) => p !== myClientId);
+                        });
+                        addLog(`收到连接确认/房间状态。Peers: ${get().peersInSignalRoom.join(', ') || '无'}`, '信令');
+                    }
+                    break;
+                case 'peer_joined':
+                    if (signal.payload.peerId !== myClientId) {
+                        addLog(`Peer ${signal.payload.peerId} 加入了房间。`, '信令');
+                        set(state => {
+                            if (!state.peersInSignalRoom.includes(signal.payload.peerId)) {
+                                state.peersInSignalRoom = [...state.peersInSignalRoom, signal.payload.peerId];
+                            }
+                        });
+                    }
+                    break;
+                case 'peer_left':
+                    addLog(`Peer ${signal.payload.peerId} 离开了房间。`, '信令');
+                    set(state => {
+                        state.peersInSignalRoom = state.peersInSignalRoom.filter(p => p !== signal.payload.peerId);
+                    });
+                    if (targetPeerIdForP2P === signal.payload.peerId) {
+                        addLog(`当前P2P目标 ${signal.payload.peerId} 已离开，关闭P2P连接。`, 'WebRTC');
+                        closeP2PConnection('目标离开');
+                        set({ targetPeerIdForP2P: null }); // 清空目标
+                    }
+                    break;
+                case 'offer':
+                    if (signal.senderId && signal.payload && signal.senderId !== myClientId) {
+                        // 当收到 offer 时，通常意味着对方想与我建立连接
+                        // 我们应该准备接受这个 offer，并将 offer 的发送者设为当前的 P2P 目标
+                        addLog(`收到来自 ${signal.senderId} 的 Offer，准备处理...`, 'WebRTC');
+                        if (get().isP2PConnected && get().targetPeerIdForP2P !== signal.senderId) {
+                            closeP2PConnection('收到新的offer，覆盖旧连接');
+                        }
+                        setTargetPeerIdForP2P(signal.senderId); // 设定或更新P2P目标
+
+                        if (!peerConnectionInstance || peerConnectionInstance.signalingState === 'closed') {
+                            peerConnectionInstance = get()._createPeerConnection(signal.senderId);
+                        }
+                        if (peerConnectionInstance) {
+                            _handleOfferViaApi(signal.payload as RTCSessionDescriptionInit, signal.senderId, peerConnectionInstance);
+                        } else {
+                            addLog('无法创建 PeerConnection 来处理 Offer。', '错误');
+                        }
+                    }
+                    break;
+                case 'answer':
+                    if (signal.senderId && signal.payload && peerConnectionInstance && signal.senderId === get().targetPeerIdForP2P) {
+                        _handleAnswerViaApi(signal.payload as RTCSessionDescriptionInit, signal.senderId, peerConnectionInstance);
+                    }
+                    break;
+                case 'candidate':
+                    if (signal.senderId && signal.payload && peerConnectionInstance && signal.senderId === get().targetPeerIdForP2P) {
+                        _handleCandidateViaApi(signal.payload as RTCIceCandidateInit, signal.senderId, peerConnectionInstance);
+                    }
+                    break;
+                case 'room_state':
+                    set(state => {
+                        state.peersInSignalRoom = (signal.payload.peersInRoom || []).filter((p: string) => p !== myClientId);
+                    });
+                    addLog(`收到房间状态更新。Peers: ${get().peersInSignalRoom.join(', ') || '无'}`, '信令');
+                    break;
+                case 'error':
+                    addLog(`收到服务器错误信令: ${signal.payload.message}`, '错误');
+                    showNotification('服务器消息', signal.payload.message, 'error');
+                    break;
+                default:
+                    addLog(`收到未处理的API信号类型: ${(signal as any).type}`, '警告');
+            }
+        },
+
         setTargetPeerIdForP2P: (peerId) => {
             const { targetPeerIdForP2P: currentTarget, isP2PConnected, closeP2PConnection, addLog } = get();
-            if (peerId === currentTarget) return; // No change
+            if (peerId === currentTarget && peerId !== null) return; // 如果目标未变且不是设为null，则不操作
 
-            if (isP2PConnected) { // If currently connected and target changes, close old P2P
-                addLog(`P2P 目标从 ${currentTarget} 切换到 ${peerId || '无'}，关闭旧连接。`, 'WebRTC');
-                closeP2PConnection('切换P2P目标');
+            if (isP2PConnected && currentTarget !== peerId) { // 如果之前有连接并且目标变了，或者目标设为null
+                addLog(`P2P 目标改变/取消，关闭旧连接 (原目标: ${currentTarget || '无'})。`, 'WebRTC');
+                closeP2PConnection('切换/取消P2P目标');
             }
             set({ targetPeerIdForP2P: peerId });
             if (peerId) {
                 addLog(`已选择 Peer ${peerId} 作为 P2P 通信目标。`, '日志');
             } else {
                 addLog('已取消 P2P 通信目标选择。', '日志');
+                // 如果取消目标时 P2P 仍然连接 (虽然理论上 closeP2PConnection 已处理)，再次确保
+                if (get().isP2PConnected) set({ isP2PConnected: false });
             }
         },
 
         _createPeerConnection: (targetPeerId) => {
-            const { addLog, showNotification, sendSignalingMessage, _setupDataChannelEvents, closeP2PConnection } = get();
-            addLog(`[Store] 创建到 Peer ${targetPeerId} 的 RTCPeerConnection...`, 'WebRTC');
+            const { addLog, showNotification, sendApiSignal, _setupDataChannelEvents, closeP2PConnection, currentRoomId, myClientId } = get();
+            if (!myClientId || !currentRoomId) {
+                addLog('无法创建PeerConnection：未加入房间或客户端ID未知。', '错误');
+                return null;
+            }
+            addLog(`[Store _createPeerConnection] 创建到 Peer ${targetPeerId} 的 RTCPeerConnection...`, 'WebRTC');
 
             if (peerConnectionInstance && peerConnectionInstance.signalingState !== 'closed') {
-                addLog('[Store] 已存在活动 PeerConnection，先关闭旧的。', 'WebRTC');
-                closeP2PConnection('创建新PC前清理'); // 使用 store 里的 closeP2PConnection
+                addLog('[Store _createPeerConnection] 已存在活动 PeerConnection，先关闭旧的。', 'WebRTC');
+                closeP2PConnection('创建新PC前清理');
             }
             try {
                 const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-                peerConnectionInstance = pc; // Store instance in closure
+                peerConnectionInstance = pc; // 在闭包中存储实例
 
                 pc.onicecandidate = (event) => {
-                    if (event.candidate && socketInstance?.readyState === WebSocket.OPEN) {
-                        sendSignalingMessage('candidate', { candidate: event.candidate.toJSON() }, targetPeerId);
+                    if (event.candidate && get().isSignalSetup) {
+                        sendApiSignal({
+                            type: 'candidate',
+                            payload: event.candidate.toJSON(),
+                            senderId: myClientId,
+                            targetPeerId: targetPeerId,
+                            roomId: currentRoomId,
+                        });
                     }
                 };
                 pc.oniceconnectionstatechange = () => {
-                    addLog(`[Store] ICE 连接状态: ${pc.iceConnectionState}`, 'WebRTC');
-                    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'closed') {
-                        // 可以在这里触发更彻底的P2P清理，但要小心循环
-                        // closeP2PConnection('ICE状态变化');
-                    }
+                    addLog(`[Store PC] ICE 连接状态: ${pc.iceConnectionState}`, 'WebRTC');
                 };
                 pc.onconnectionstatechange = () => {
-                    addLog(`[Store] P2P 连接状态: ${pc.connectionState}`, 'WebRTC');
+                    addLog(`[Store PC] P2P 连接状态: ${pc.connectionState} (与 ${targetPeerId})`, 'WebRTC');
                     if (pc.connectionState === 'connected') {
                         set({ isP2PConnected: true });
                         showNotification('P2P 连接成功', `已与 ${targetPeerId} 建立P2P连接！`, 'success');
                     } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                        set({ isP2PConnected: false });
-                        // 如果不是主动关闭，可以提示用户
-                        if (pc.connectionState !== 'closed' || !activeInitiatingDisconnect) { // (activeInitiatingDisconnect might need refinement for P2P)
-                            showNotification('P2P 连接中断', `与 ${targetPeerId} 的P2P连接已${pc.connectionState}。`, 'error');
+                        // 只有当不是我们主动关闭的时候才设置 isP2PConnected 为 false
+                        // closeP2PConnection 会自己设置 isP2PConnected
+                        if (peerConnectionInstance === pc) { // 确保是当前实例的状态变化
+                            set({ isP2PConnected: false });
+                            if (pc.connectionState !== 'closed') {
+                                showNotification('P2P 连接中断', `与 ${targetPeerId} 的P2P连接已${pc.connectionState}。`, 'error');
+                            }
                         }
                     }
                 };
                 pc.ondatachannel = (event) => {
-                    addLog(`[Store] 收到对方创建的 DataChannel: ${event.channel.label}`, 'WebRTC');
+                    addLog(`[Store PC] 收到来自 ${targetPeerId} 的 DataChannel: ${event.channel.label}`, 'WebRTC');
                     const dc = event.channel;
                     _setupDataChannelEvents(dc);
-                    dataChannelInstance = dc; // Store instance in closure
+                    dataChannelInstance = dc; // 更新闭包中的实例
                 };
                 return pc;
             } catch (error) {
-                addLog(`[Store] 创建 RTCPeerConnection 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
+                addLog(`[Store _createPeerConnection] 创建 RTCPeerConnection 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
                 peerConnectionInstance = null;
                 return null;
             }
         },
-        _createDataChannel: (pc, label = "fileTransferChannel_zustand") => {
+
+        _createDataChannel: (pc, label = "fileTransfer_http_signal") => {
             const { addLog, _setupDataChannelEvents } = get();
-            addLog(`[Store] 创建 DataChannel: "${label}"`, 'WebRTC');
+            addLog(`[Store _createDataChannel] 创建 DataChannel: "${label}"`, 'WebRTC');
             if (!pc || pc.signalingState === 'closed') {
-                addLog('[Store] PeerConnection 不存在或已关闭，无法创建 DataChannel。', '错误');
+                addLog('[Store _createDataChannel] PeerConnection 不存在或已关闭。', '错误');
                 return null;
             }
             try {
                 const dc = pc.createDataChannel(label, { ordered: true });
                 _setupDataChannelEvents(dc);
-                dataChannelInstance = dc; // Store instance
+                dataChannelInstance = dc; // 更新闭包中的实例
                 return dc;
             } catch (e) {
-                addLog(`[Store] 创建 DataChannel "${label}" 失败: ${e instanceof Error ? e.message : String(e)}`, '错误');
+                addLog(`[Store _createDataChannel] 创建 DataChannel "${label}" 失败: ${e instanceof Error ? e.message : String(e)}`, '错误');
                 return null;
             }
         },
@@ -501,48 +564,51 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
         _setupDataChannelEvents: (channel) => {
             const { addLog, showNotification, _revokeReceivedFileDownloadUrl } = get();
             channel.binaryType = 'arraybuffer';
+            addLog(`[Store _setupDataChannelEvents] 为 DataChannel "${channel.label}" 设置事件监听器。`, 'WebRTC');
 
             channel.onopen = () => {
-                addLog(`[Store] P2P 数据通道 "${channel.label}" 已打开！`, 'WebRTC');
-                set({
-                    receivingFileMetadata: null, // Reset for new connection
-                    receivedFileChunks: [],
-                    fileReceiveProgress: 0,
+                addLog(`[Store DC ${channel.label}] P2P 数据通道已打开！`, 'WebRTC');
+                // 清理上一次接收的文件状态
+                set(state => {
+                    state.receivingFileMetadata = null;
+                    state.receivedFileChunks = [];
+                    state.fileReceiveProgress = 0;
                 });
             };
             channel.onclose = () => {
-                addLog(`[Store] P2P 数据通道 "${channel.label}" 已关闭。`, 'WebRTC');
-                // dataChannelInstance = null; // Clean up ref, P2P close should handle this too
+                addLog(`[Store DC ${channel.label}] P2P 数据通道已关闭。`, 'WebRTC');
+                // dataChannelInstance = null; // 由 closeP2PConnection 清理
             };
             channel.onerror = (event) => {
-                const errorEvent = event as RTCErrorEvent; // Type assertion
-                addLog(`[Store] P2P 数据通道 "${channel.label}" 发生错误: ${errorEvent.error?.message || JSON.stringify(event)}`, '错误');
+                const errorEvent = event as RTCErrorEvent;
+                addLog(`[Store DC ${channel.label}] P2P 数据通道发生错误: ${errorEvent.error?.message || JSON.stringify(event)}`, '错误');
             };
             channel.onmessage = (event: MessageEvent) => {
+                addLog(`[Store DC ${channel.label}] 收到消息，类型: ${typeof event.data}`, '接收');
                 if (typeof event.data === 'string') {
                     try {
                         const message = JSON.parse(event.data);
                         if (message.type === 'file_metadata') {
                             const metadata = message.payload as FileMetadata;
-                            addLog(`[Store] 收到文件元数据: ${metadata.name} (总块数: ${metadata.totalChunks})`, '接收');
-                            _revokeReceivedFileDownloadUrl(); // Clean up previous download URL
+                            addLog(`[Store DC] 收到文件元数据: ${metadata.name} (大小: ${metadata.size}, 总块数: ${metadata.totalChunks})`, '接收');
+                            _revokeReceivedFileDownloadUrl(); // 清理上一个下载链接
                             set({
                                 receivingFileMetadata: metadata,
-                                receivedFileChunks: [], // Reset for new file
+                                receivedFileChunks: [],
                                 fileReceiveProgress: 0,
-                                lastReceivedFileData: null, // Clear previous downloaded file display
+                                lastReceivedFileData: null, // 清理上一个完成的文件
                                 receivedFileDownloadUrl: null,
                             });
                         } else {
-                            addLog(`[Store] DataChannel 收到文本: ${event.data.substring(0, 100)}...`, '接收');
+                            addLog(`[Store DC] DataChannel 收到文本: ${event.data.substring(0, 100)}...`, '接收');
                         }
                     } catch (e) {
-                        addLog(`[Store] DataChannel 收到无法解析文本: ${event.data.substring(0, 100)}...`, '接收');
+                        addLog(`[Store DC] DataChannel 收到无法解析的文本: ${event.data.substring(0, 100)}...`, '接收');
                     }
                 } else if (event.data instanceof ArrayBuffer) {
                     const currentReceivingMeta = get().receivingFileMetadata;
                     if (!currentReceivingMeta) {
-                        addLog('[Store] 收到文件块但无元数据，已忽略。', '错误');
+                        addLog('[Store DC] 收到文件块但无元数据，已忽略。', '错误');
                         return;
                     }
                     const newChunks = [...get().receivedFileChunks, event.data];
@@ -550,129 +616,153 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
                     set({ receivedFileChunks: newChunks, fileReceiveProgress: progress });
 
                     if (newChunks.length === currentReceivingMeta.totalChunks) {
-                        addLog(`[Store] 文件 "${currentReceivingMeta.name}" 所有块接收完毕！正在重组...`, 'WebRTC');
+                        addLog(`[Store DC] 文件 "${currentReceivingMeta.name}" 所有块 (${newChunks.length}) 接收完毕！正在重组...`, 'WebRTC');
                         const fileBlob = new Blob(newChunks, { type: currentReceivingMeta.type });
-                        showNotification('文件接收成功', `文件 "${currentReceivingMeta.name}" 已接收。`, 'success');
                         const url = URL.createObjectURL(fileBlob);
                         set({
                             lastReceivedFileData: { blob: fileBlob, metadata: currentReceivingMeta },
                             receivedFileDownloadUrl: url,
-                            // Optional: reset receivingFileMetadata here if you don't want to show "receiving X" anymore
-                            // receivingFileMetadata: null,
-                            // receivedFileChunks: [], // Already done when new metadata arrives
+                            // receivingFileMetadata: null, // 保留元数据显示文件名等
+                            // receivedFileChunks: [], // 下次收到新元数据时会重置
+                            fileReceiveProgress: 100
                         });
+                        showNotification('文件接收成功', `文件 "${currentReceivingMeta.name}" 已接收。`, 'success');
                     }
                 } else {
-                    addLog(`[Store] DataChannel 收到未知类型数据: ${typeof event.data}`, '接收');
+                    addLog(`[Store DC] DataChannel 收到未知类型数据: ${typeof event.data}`, '接收');
                 }
             };
         },
 
-        _handleOffer: async (offerSdp, senderId, pc) => {
-            const { myClientId, addLog, sendSignalingMessage, closeP2PConnection, _createPeerConnection, setTargetPeerIdForP2P } = get();
-            if (!socketInstance || socketInstance.readyState !== WebSocket.OPEN || !myClientId) {
-                addLog('[Store] 信令服务未连接或我的ID未知，无法处理 Offer。', '错误'); return;
+        initiateP2PCall: async (targetPeerId) => {
+            const { myClientId, currentRoomId, addLog, sendApiSignal, closeP2PConnection, _createPeerConnection, _createDataChannel, isSignalSetup, targetPeerIdForP2P: currentTarget, isP2PConnected } = get();
+
+            if (!isSignalSetup || !myClientId || !currentRoomId) {
+                addLog('信令未设置或未加入房间，无法发起呼叫。', '错误'); return;
+            }
+            if (targetPeerId === myClientId) {
+                addLog('不能与自己建立 P2P 连接。', '错误'); return;
+            }
+            if (isP2PConnected && currentTarget === targetPeerId) {
+                addLog(`已与 ${targetPeerId} 连接，无需重复发起。`, '日志'); return;
             }
 
-            // If the offer is from a new peer, or if the existing PC is for a different peer, create a new PC.
-            // This logic might need refinement if multiple offers can arrive concurrently for different peers.
-            let currentPC = pc;
-            if (!currentPC || (currentPC !== peerConnectionInstance) || (peerConnectionInstance && peerConnectionInstance.remoteDescription && !peerConnectionInstance.remoteDescription.sdp.includes(senderId))) {
-                // If there's an existing PC for a different peer, close it first.
-                if (peerConnectionInstance && peerConnectionInstance.signalingState !== 'closed') {
-                    addLog(`[Store] 收到来自 ${senderId} 的 Offer，但当前PC是为其他人，关闭旧PC。`, 'WebRTC');
-                    closeP2PConnection('处理新Offer前清理旧PC');
-                }
-                currentPC = _createPeerConnection(senderId) as RTCPeerConnection; // Re-assign
-                if (!currentPC) {
-                    addLog('[Store] 创建新 PeerConnection 失败，无法处理 Offer。', '错误');
-                    return;
-                }
+            addLog(`向 ${targetPeerId} 发起 P2P 呼叫...`, 'WebRTC');
+            // 在发起呼叫前，如果当前有与其他人的 P2P 连接，先断开
+            if (isP2PConnected && currentTarget !== targetPeerId) {
+                closeP2PConnection('切换P2P呼叫目标');
             }
+            set({ targetPeerIdForP2P: targetPeerId }); // 确保 P2P 目标已更新
 
-            addLog(`[Store] 收到来自 ${senderId} 的 Offer。准备处理...`, 'WebRTC');
-            setTargetPeerIdForP2P(senderId); // Ensure target is set
+            const pc = _createPeerConnection(targetPeerId);
+            if (!pc) { addLog('创建 PeerConnection 失败，无法发起呼叫。', '错误'); return; }
+
+            const dc = _createDataChannel(pc);
+            if (!dc) {
+                addLog('创建 DataChannel 失败，无法发起呼叫。', '错误');
+                closeP2PConnection('P2P呼叫时DC创建失败'); // 清理已创建的 PC
+                return;
+            }
 
             try {
-                await currentPC.setRemoteDescription(new RTCSessionDescription(offerSdp));
-                addLog('[Store] 远程描述 (Offer) 已设置。创建 Answer...', 'WebRTC');
-                const answer = await currentPC.createAnswer();
-                await currentPC.setLocalDescription(answer);
-                addLog('[Store] Answer 已创建并设置本地描述。通过信令发送 Answer...', 'WebRTC');
-                sendSignalingMessage('answer', { type: answer.type, sdp: answer.sdp }, senderId);
+                addLog('[Store] 正在创建 Offer...', 'WebRTC');
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                addLog('[Store] Offer 已创建并设置本地描述，准备通过 API 发送...', 'WebRTC');
+                const success = await sendApiSignal({
+                    type: 'offer',
+                    payload: { type: offer.type, sdp: offer.sdp },
+                    senderId: myClientId,
+                    targetPeerId: targetPeerId,
+                    roomId: currentRoomId,
+                });
+                if (success) {
+                    addLog('Offer 已通过 API 发送。', '发送');
+                } else {
+                    throw new Error('API 发送 Offer 失败');
+                }
             } catch (error) {
-                addLog(`[Store] 处理 Offer 或创建/发送 Answer 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
-                closeP2PConnection('Offer处理失败');
+                addLog(`创建或发送 Offer 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
+                closeP2PConnection('P2P呼叫时Offer失败');
             }
         },
-        _handleAnswer: async (answerSdp, senderId, pc) => {
+
+        _handleOfferViaApi: async (offerSdp, senderId, pc) => {
+            const { myClientId, currentRoomId, addLog, sendApiSignal, closeP2PConnection } = get();
+            if (!myClientId || !currentRoomId) return; // 未初始化
+
+            addLog(`[Store _handleOfferViaApi] 收到来自 ${senderId} 的 Offer，通过 API。`, 'WebRTC');
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
+                addLog('[Store _handleOfferViaApi] 远程描述 (Offer) 已设置。正在创建 Answer...', 'WebRTC');
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                addLog('[Store _handleOfferViaApi] Answer 已创建并设置本地描述，准备通过 API 发送...', 'WebRTC');
+                const success = await sendApiSignal({
+                    type: 'answer',
+                    payload: { type: answer.type, sdp: answer.sdp },
+                    senderId: myClientId,
+                    targetPeerId: senderId, // 回复给 Offer 的发送者
+                    roomId: currentRoomId,
+                });
+                if (success) {
+                    addLog('Answer 已通过 API 发送。', '发送');
+                } else {
+                    throw new Error('API 发送 Answer 失败');
+                }
+            } catch (error) {
+                addLog(`处理 Offer 或创建/发送 Answer (API) 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
+                closeP2PConnection('Offer处理或Answer发送失败(API)');
+            }
+        },
+
+        _handleAnswerViaApi: async (answerSdp, senderId, pc) => {
             const { addLog, closeP2PConnection } = get();
-            addLog(`[Store] 收到来自 ${senderId} 的 Answer。`, 'WebRTC');
+            addLog(`[Store _handleAnswerViaApi] 收到来自 ${senderId} 的 Answer，通过 API。`, 'WebRTC');
             if (!pc || pc.signalingState === 'closed') {
-                addLog('[Store] PeerConnection 不存在或已关闭，无法处理 Answer。', '错误'); return;
-            }
-            try {
-                await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
-                addLog('[Store] 远程描述 (Answer) 已设置。P2P 连接应该即将建立。', 'WebRTC');
-            } catch (error) {
-                addLog(`[Store] 设置远程描述 (Answer) 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
-                closeP2PConnection('Answer处理失败');
-            }
-        },
-        _handleCandidate: async (candidateInit, senderId, pc) => {
-            const { addLog } = get();
-            addLog(`[Store] 收到来自 ${senderId} 的 ICE Candidate。`, 'WebRTC');
-            if (!pc || pc.signalingState === 'closed' || !pc.remoteDescription) { // RemoteDescription must be set first
-                addLog('[Store] PeerConnection 不存在、已关闭或无远程描述，无法添加 ICE Candidate。', '错误');
+                addLog('[Store _handleAnswerViaApi] PeerConnection 不存在或已关闭。', '错误');
                 return;
             }
             try {
-                await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
-                addLog('[Store] ICE Candidate 已添加。', 'WebRTC');
+                await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
+                addLog('[Store _handleAnswerViaApi] 远程描述 (Answer) 已设置。P2P 连接应即将建立。', 'WebRTC');
             } catch (error) {
-                // Common error: "Error processing ICE candidate" if remote description isn't set.
-                addLog(`[Store] 添加 ICE Candidate 失败: ${error instanceof Error ? error.message : String(error)} (${JSON.stringify(candidateInit)})`, '错误');
+                addLog(`设置远程描述 (Answer API) 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
+                closeP2PConnection('Answer处理失败(API)');
             }
         },
 
-        initiateP2PCall: async (targetPeerId) => {
-            const { myClientId, addLog, sendSignalingMessage, closeP2PConnection, _createPeerConnection, _createDataChannel, isP2PConnected, targetPeerIdForP2P: currentTarget } = get();
+        _handleCandidateViaApi: async (candidateInit, senderId, pc) => {
+            const { addLog } = get();
+            addLog(`[Store _handleCandidateViaApi] 收到来自 ${senderId} 的 ICE Candidate，通过 API。PC状态: ${pc?.signalingState}`, 'WebRTC');
 
-            if (!socketInstance || socketInstance.readyState !== WebSocket.OPEN || !myClientId) {
-                addLog('[Store] 信令服务未连接或我的ID未知，无法发起呼叫。', '错误'); return;
-            }
-            if (targetPeerId === myClientId) {
-                addLog('[Store] 不能与自己建立 P2P 连接。', '错误'); return;
-            }
-            if (isP2PConnected && currentTarget === targetPeerId) {
-                addLog(`[Store] 已与 ${targetPeerId} 连接，无需重复。`, '日志'); return;
+            if (!pc || pc.signalingState === 'closed') {
+                addLog('[Store _handleCandidateViaApi] PeerConnection 无效或已关闭。', '错误');
+                return;
             }
 
-            addLog(`[Store] 向 ${targetPeerId} 发起 P2P 呼叫...`, 'WebRTC');
-            // Ensure P2P target is set correctly in store, even if called directly
-            set({ targetPeerIdForP2P: targetPeerId });
-
-            const pc = _createPeerConnection(targetPeerId);
-            if (!pc) { addLog('[Store] 创建 PeerConnection 失败。', '错误'); return; }
-
-            const dc = _createDataChannel(pc);
-            if (!dc) { addLog('[Store] 创建 DataChannel 失败。', '错误'); closeP2PConnection('P2P呼叫时DC创建失败'); return; }
+            // 尝试等待 remoteDescription 设置好
+            if (!pc.remoteDescription) {
+                addLog('[Store _handleCandidateViaApi] 远端描述尚未设置，等待100ms后重试...', '警告');
+                await new Promise(resolve => setTimeout(resolve, 100)); // 等待 100ms
+                if (!pc.remoteDescription) { // 再次检查
+                    addLog('[Store _handleCandidateViaApi] 远端描述在等待后仍未设置，放弃添加此 Candidate。', '错误');
+                    return;
+                }
+                 addLog('[Store _handleCandidateViaApi] 远端描述在等待后已设置。', '日志');
+            }
 
             try {
-                addLog('[Store] 创建 Offer...', 'WebRTC');
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                addLog('[Store] Offer 已创建并发送...', 'WebRTC');
-                sendSignalingMessage('offer', { type: offer.type, sdp: offer.sdp }, targetPeerId);
+                await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+                addLog('[Store _handleCandidateViaApi] ICE Candidate 已添加。', 'WebRTC');
             } catch (error) {
-                addLog(`[Store] 创建或发送 Offer 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
-                closeP2PConnection('P2P呼叫时Offer失败');
+                addLog(`添加 ICE Candidate (API) 失败: ${error instanceof Error ? error.message : String(error)}`, '错误');
             }
         },
 
         closeP2PConnection: (reason = '未知原因') => {
             const { addLog } = get();
-            addLog(`[Store] 尝试关闭 P2P 连接... (原因: ${reason})`, 'WebRTC');
+            addLog(`[Store closeP2PConnection] 尝试关闭 P2P 连接... (原因: ${reason})`, 'WebRTC');
 
             if (dataChannelInstance) {
                 if (dataChannelInstance.readyState === 'open' || dataChannelInstance.readyState === 'connecting') {
@@ -682,7 +772,8 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
                 dataChannelInstance.onclose = null;
                 dataChannelInstance.onerror = null;
                 dataChannelInstance.onmessage = null;
-                dataChannelInstance = null;
+                dataChannelInstance = null; // 清理闭包中的引用
+                addLog('[Store closeP2PConnection] DataChannel 已清理。', 'WebRTC');
             }
             if (peerConnectionInstance) {
                 if (peerConnectionInstance.signalingState !== 'closed') {
@@ -692,23 +783,24 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
                 peerConnectionInstance.oniceconnectionstatechange = null;
                 peerConnectionInstance.onconnectionstatechange = null;
                 peerConnectionInstance.ondatachannel = null;
-                peerConnectionInstance = null;
+                peerConnectionInstance = null; // 清理闭包中的引用
+                addLog('[Store closeP2PConnection] PeerConnection 已清理。', 'WebRTC');
             }
 
-            set({
-                isP2PConnected: false,
-                // targetPeerIdForP2P: null, // Keep target unless explicitly changed by setTargetPeerIdForP2P
-                receivingFileMetadata: null,
-                receivedFileChunks: [],
-                fileReceiveProgress: 0,
-                // Don't clear lastReceivedFileData or URL here, user might still want to download
-            });
-            addLog(`[Store] P2P 连接资源已清理。 (原因: ${reason})`, 'WebRTC');
+            // 只有在确实是从连接状态变为非连接状态时才更新
+            if (get().isP2PConnected) {
+                set({
+                    isP2PConnected: false,
+                    // receivingFileMetadata: null, // 这些在 P2P 关闭时不一定需要重置，除非开始新的 P2P
+                    // receivedFileChunks: [],
+                    // fileReceiveProgress: 0,
+                });
+            }
+            addLog(`[Store closeP2PConnection] P2P 连接资源已清理。 (原因: ${reason})`, 'WebRTC');
         },
 
-        // --- File Actions ---
         setSelectedFile: (file) => {
-            set({ selectedFile: file, fileSendProgress: 0 }); // Reset progress
+            set({ selectedFile: file, fileSendProgress: 0 }); // 选择新文件时重置进度
             if (file) get().addLog(`[Store] 已选文件: ${file.name}`, '日志');
             else get().addLog('[Store] 取消选择文件。', '日志');
         },
@@ -747,6 +839,7 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
 
             try {
                 dataChannelInstance.send(JSON.stringify({ type: 'file_metadata', payload: metadata }));
+                addLog(`[Store] 文件元数据已发送: ${metadata.name}`, '发送');
             } catch (e) {
                 addLog(`[Store] 发送文件元数据失败: ${e instanceof Error ? e.message : String(e)}`, '错误');
                 _setIsFileSending(false);
@@ -760,19 +853,15 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
             const readAndSendChunk = (): Promise<boolean> => {
                 return new Promise<boolean>((resolve, reject) => {
                     if (!dataChannelInstance || dataChannelInstance.readyState !== 'open') {
-                        addLog('[Store] 文件发送中断：DataChannel已关闭（在readAndSendChunk中）。', '错误');
-                        reject(new Error('DataChannel closed'));
+                        reject(new Error('DataChannel closed during chunk read/send'));
                         return;
                     }
-                    // Buffered amount check
-                    while (dataChannelInstance && dataChannelInstance.bufferedAmount > FILE_CHUNK_SIZE * 16) { // 16 * 16KB = 256KB buffer limit
-                        // This sync loop might block, consider async await for setTimeout
-                        // For simplicity here, assuming it clears relatively fast or a short sync wait is acceptable
-                        // await new Promise(r => setTimeout(r, 10)); // If made async
-                        console.log(`[Store Log] DataChannel buffer high (${dataChannelInstance.bufferedAmount}), brief pause.`);
-                        // A real implementation might use requestAnimationFrame or setTimeout in a loop
+                    // 缓冲检查 (更细致的控制，防止发送过快导致DataChannel阻塞或崩溃)
+                    if (dataChannelInstance.bufferedAmount > FILE_CHUNK_SIZE * 16) { // 例如，当缓冲区大于16个块大小时暂停
+                        // addLog(`DataChannel buffer high (${dataChannelInstance.bufferedAmount}), pausing send...`, '日志');
+                        setTimeout(() => resolve(readAndSendChunk()), 50); // 短暂延迟后重试
+                        return;
                     }
-
 
                     const slice = selectedFile.slice(offset, offset + FILE_CHUNK_SIZE);
                     reader.onload = (e_onload) => {
@@ -786,16 +875,13 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
                                 _setFileSendProgress(prog);
                                 resolve(true);
                             } catch (err_send) {
-                                addLog(`[Store] 发送块 ${chunkCount + 1} 失败: ${err_send instanceof Error ? err_send.message : String(err_send)}`, '错误');
                                 reject(err_send);
                             }
                         } else {
-                            addLog('[Store] DataChannel 在发送块时关闭。', '错误');
                             reject(new Error('DataChannel closed during chunk send'));
                         }
                     };
                     reader.onerror = (e_onerror) => {
-                        addLog(`[Store] 读文件块失败: ${reader.error?.message}`, '错误');
                         reject(reader.error);
                     };
                     reader.readAsArrayBuffer(slice);
@@ -803,18 +889,20 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
             };
 
             try {
-                for (let i = 0; i < totalChunks; i++) {
-                    if (!dataChannelInstance || dataChannelInstance.readyState !== 'open') {
-                        addLog('[Store] 文件发送中断：DataChannel已关闭（在主循环中）。', '错误');
-                        throw new Error('DataChannel closed during file send loop');
-                    }
-                    await readAndSendChunk(); // Await each chunk to be processed
-                }
-                // Handle zero-byte files
-                if (totalChunks === 0 && selectedFile.size === 0) {
+                // 处理0字节文件
+                if (selectedFile.size === 0) {
                     _setFileSendProgress(100);
+                    addLog(`[Store] 文件 "${selectedFile.name}" 大小为0，标记为发送完成。`, '发送');
+                    // 对于0字节文件，也发送一个完成信号或者空的metadata可能更好，取决于接收端如何处理。
+                    // 这里简单地认为已完成。
+                } else {
+                    for (let i = 0; i < totalChunks; i++) {
+                        if (!dataChannelInstance || dataChannelInstance.readyState !== 'open') {
+                            throw new Error('DataChannel closed during file send loop');
+                        }
+                        await readAndSendChunk();
+                    }
                 }
-
                 addLog(`[Store] 文件 "${selectedFile.name}" 发送处理完成！`, '发送');
                 showNotification('发送完毕', `文件 "${selectedFile.name}" 已成功发送。`, 'success');
                 _setIsFileSending(false);
@@ -824,12 +912,36 @@ export const useWebRTCStore = create<WebRTCState & WebRTCActions>()(
                 const finalProgressOnError = totalChunks > 0 ? Math.round((chunkCount / totalChunks) * 100) : 0;
                 _setFileSendProgress(finalProgressOnError);
                 _setIsFileSending(false);
-                showNotification('发送失败', `文件 "${selectedFile.name}"未能成功发送。`, 'error');
+                showNotification('发送失败', `文件 "${selectedFile.name}" 未能成功发送。`, 'error');
                 return false;
             }
-        }
+        },
+
+        _setIsP2PConnected: (connected) => set({ isP2PConnected: connected }),
+        _setFileSendProgress: (progress) => set({ fileSendProgress: progress }),
+        _setIsFileSending: (sending) => set({ isFileSending: sending }),
+
+        cleanupStore: () => {
+            const { stopPollingSignals, closeP2PConnection, _revokeReceivedFileDownloadUrl, addLog } = get();
+            addLog('执行 Store 清理...', '日志');
+            stopPollingSignals();
+            closeP2PConnection('Store清理');
+            _revokeReceivedFileDownloadUrl();
+            // 清理闭包中的实例引用
+            peerConnectionInstance = null;
+            dataChannelInstance = null;
+            // 可以选择是否重置所有状态到初始值
+            set({
+                isSignalSetup: false,
+                myClientId: null,
+                currentRoomId: null,
+                peersInSignalRoom: [],
+                isP2PConnected: false,
+                targetPeerIdForP2P: null,
+                // logs: [], // 是否清空日志可选
+                // selectedFile: null, // 用户可能还想保留文件选择
+            });
+            addLog('Store 清理完成。', '日志');
+        },
     }))
 );
-
-// --- Helper to get non-reactive fresh state if needed outside components ---
-// export const getWebRTCState = () => useWebRTCStore.getState();

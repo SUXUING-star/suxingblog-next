@@ -2,11 +2,13 @@
 import React from 'react';
 import { Paper, Title, Text, Button, Group, List, ThemeIcon, Box, Badge, Code, useMantineTheme } from '@mantine/core';
 import { IconUserCircle, IconTargetArrow, IconPhoneCall, IconPhoneOff, IconCheck } from '@tabler/icons-react';
-import { useWebRTCStore } from '../../stores/webrtcStore'; // 路径调整
+import { useWebRTCStore } from '../../stores/webrtcStore';
 
 const P2PControl: React.FC = () => {
     const theme = useMantineTheme();
-    const isSignalConnected = useWebRTCStore(state => state.isSignalConnected);
+
+    // MODIFIED: isSignalConnected -> isSignalSetup
+    const isSignalSetup = useWebRTCStore(state => state.isSignalSetup);
     const peersInSignalRoom = useWebRTCStore(state => state.peersInSignalRoom);
     const targetPeerIdForP2P = useWebRTCStore(state => state.targetPeerIdForP2P);
     const setTargetPeerIdForP2P = useWebRTCStore(state => state.setTargetPeerIdForP2P);
@@ -14,6 +16,8 @@ const P2PControl: React.FC = () => {
     const isP2PConnected = useWebRTCStore(state => state.isP2PConnected);
     const closeP2PConnection = useWebRTCStore(state => state.closeP2PConnection);
     const myClientId = useWebRTCStore(state => state.myClientId);
+    const showStoreNotification = useWebRTCStore(state => state.showNotification);
+
 
     const handleTargetSelect = (peerId: string) => {
         if (targetPeerIdForP2P !== peerId) {
@@ -24,14 +28,21 @@ const P2PControl: React.FC = () => {
     };
 
     const handleInitiateCall = () => {
+        if (!myClientId) {
+            showStoreNotification('错误', '客户端ID未设置，无法发起呼叫。', 'error');
+            return;
+        }
         if (targetPeerIdForP2P) {
             initiateP2PCall(targetPeerIdForP2P);
+        } else {
+            showStoreNotification('提示', '请先选择一个P2P目标。', 'info');
         }
     };
 
-    const availablePeers = peersInSignalRoom.filter(id => id !== myClientId); // 不显示自己
+    const availablePeers = peersInSignalRoom.filter(id => id !== myClientId);
 
-    if (!isSignalConnected) return null; // 如果信令未连接，则不显示P2P控制
+    // MODIFIED: 使用 isSignalSetup
+    if (!isSignalSetup) return null;
 
     return (
         <Paper shadow="sm" p="lg" radius="md" withBorder>
@@ -60,13 +71,18 @@ const P2PControl: React.FC = () => {
                 <Text c="dimmed" size="sm" mb="md">暂无其他 Peer。</Text>
             )}
 
-            <Text size="sm" mb="xs">
-                当前 P2P 目标: <Badge color={targetPeerIdForP2P ? "cyan" : "gray"} variant="light">{targetPeerIdForP2P || '未选择'}</Badge>
-            </Text>
+            <Group mb="xs" align="center" gap="xs">
+                <Text size="sm">当前 P2P 目标:</Text>
+                <Badge color={targetPeerIdForP2P ? "cyan" : "gray"} variant="light">
+                    {targetPeerIdForP2P || '未选择'}
+                </Badge>
+            </Group>
+
             <Group>
                 <Button
                     onClick={handleInitiateCall}
-                    disabled={!targetPeerIdForP2P || isP2PConnected}
+                    // MODIFIED: 确保 isSignalSetup 为 true 才能发起呼叫
+                    disabled={!targetPeerIdForP2P || isP2PConnected || !isSignalSetup}
                     leftSection={<IconPhoneCall size="1rem" />}
                 >
                     建立P2P连接

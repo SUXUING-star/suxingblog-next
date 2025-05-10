@@ -1,22 +1,26 @@
 // src/components/webrtc/FileTransfer.tsx
 import React, { useRef } from 'react';
+// ... (imports 基本不变) ...
 import { Paper, Title, Tabs, FileInput, Button, Progress, Box, Text, Card, Anchor, Code, Stack, Badge } from '@mantine/core';
 import { IconUpload, IconDownload, IconFileAnalytics, IconSend, IconFileDownload } from '@tabler/icons-react';
-import { useWebRTCStore } from '../../stores/webrtcStore'; // 路径调整
+import { useWebRTCStore } from '../../stores/webrtcStore';
 
 const FileTransfer: React.FC = () => {
+    // 状态获取基本不变，因为这些状态的含义在 store 中没有大改
     const isP2PConnected = useWebRTCStore(state => state.isP2PConnected);
     const selectedFile = useWebRTCStore(state => state.selectedFile);
     const setSelectedFile = useWebRTCStore(state => state.setSelectedFile);
     const fileSendProgress = useWebRTCStore(state => state.fileSendProgress);
     const isFileSending = useWebRTCStore(state => state.isFileSending);
-    const sendFile = useWebRTCStore(state => state.sendFile);
+    const sendFile = useWebRTCStore(state => state.sendFile); // 这个 action 内部已适配
     const targetPeerIdForP2P = useWebRTCStore(state => state.targetPeerIdForP2P);
     const receivingFileMetadata = useWebRTCStore(state => state.receivingFileMetadata);
     const fileReceiveProgress = useWebRTCStore(state => state.fileReceiveProgress);
     const lastReceivedFileData = useWebRTCStore(state => state.lastReceivedFileData);
     const receivedFileDownloadUrl = useWebRTCStore(state => state.receivedFileDownloadUrl);
-    const receivedFileLinkAnchorRef = useRef<HTMLAnchorElement>(null); // 保持对下载链接的引用
+    const showStoreNotification = useWebRTCStore(state => state.showNotification);
+
+    const receivedFileLinkAnchorRef = useRef<HTMLAnchorElement>(null);
 
     const handleFileSelect = (file: File | null) => {
         setSelectedFile(file);
@@ -24,17 +28,21 @@ const FileTransfer: React.FC = () => {
 
     const handleSend = async () => {
         if (!selectedFile) {
-            useWebRTCStore.getState().showNotification('错误', '请先选择一个文件。', 'error');
+            showStoreNotification('错误', '请先选择一个文件。', 'error');
+            return;
+        }
+        if (!isP2PConnected) { // 确保 P2P 已连接
+            showStoreNotification('错误', 'P2P未连接，无法发送文件。', 'error');
             return;
         }
         await sendFile();
     };
 
-    if (!isP2PConnected) return null; // 如果P2P未连接，则不显示文件传输
+    if (!isP2PConnected) return null; // 只有 P2P 连接后才显示
 
     return (
         <Paper shadow="sm" p="lg" radius="md" withBorder>
-            <Title order={3} mb="md">文件传输</Title>
+            <Title order={3} mb="md">文件传输 (HTTP API 信令)</Title>
             <Tabs defaultValue="send">
                 <Tabs.List grow>
                     <Tabs.Tab value="send" leftSection={<IconUpload size="1rem" />}>发送文件</Tabs.Tab>
@@ -60,7 +68,7 @@ const FileTransfer: React.FC = () => {
                         </Box>
                         <Button
                             onClick={handleSend}
-                            disabled={!selectedFile || isFileSending}
+                            disabled={!selectedFile || isFileSending || !isP2PConnected} // 增加 !isP2PConnected 判断
                             loading={isFileSending}
                             leftSection={<IconSend size="1rem" />}
                             fullWidth
@@ -69,11 +77,11 @@ const FileTransfer: React.FC = () => {
                         </Button>
                     </Stack>
                 </Tabs.Panel>
-
+                {/* Tabs.Panel for receive 保持不变 */}
                 <Tabs.Panel value="receive" pt="lg">
                     <Stack>
                         {receivingFileMetadata && !lastReceivedFileData && (
-                            <Text size="sm">正在接收: <Code>{receivingFileMetadata.name}</Code> ({fileReceiveProgress}%)</Text>
+                             <Text size="sm">正在接收: <Code>{receivingFileMetadata.name}</Code> ({fileReceiveProgress}%)</Text>
                         )}
                         <Box>
                             <Text size="xs" c="dimmed" ta="right">{fileReceiveProgress}%</Text>
