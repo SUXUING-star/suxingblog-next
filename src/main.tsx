@@ -11,7 +11,6 @@ import './index.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <MantineProvider>
-      {/* 用 AuthProvider 包裹 App */}
       <AuthProvider>
         <App />
       </AuthProvider>
